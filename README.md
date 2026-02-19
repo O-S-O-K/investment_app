@@ -1,35 +1,50 @@
-# Investment App (Personal Portfolio Intelligence)
+﻿# Investment App — Personal Portfolio Intelligence
 
-[![Live App](https://img.shields.io/badge/Live-App-brightgreen)](https://investment-app-dashboard.onrender.com)
+A local-first portfolio management tool that mirrors your real holdings, generates data-driven allocation recommendations, and produces a tax-lot-aware rebalance plan — all from a clean two-tab Streamlit dashboard backed by a FastAPI service.
 
-This MVP helps you mirror your real portfolio, track 401(k) allocations, and generate data-driven suggestions using a combined SAA/TAA framework.
+> **This is a personal research tool, not financial advice.** Always validate output against your IPS, tax situation, account restrictions, and fiduciary requirements.
 
-## What this includes
+---
 
-- Portfolio + cash + lot-level holding storage (SQLite)
-- 401(k) plan options and current allocation storage
-- Market data ingestion via Yahoo Finance
-- SAA engine:
-  - strategic expected returns (historical + shrinkage proxy)
-  - covariance estimation
-  - risk-aware optimizer with volatility target and weight caps
-- TAA engine:
-  - trend signal (moving average)
-  - momentum signal (12-1 style proxy)
-  - tactical overlay to tilt strategic weights
-- Forecasting helper:
-  - simple machine-learning return forecast (tree ensemble)
-- FastAPI endpoints + Streamlit dashboard starter
+## Features
 
-## Important note
+### Portfolio data
 
-This is a personal research tool, not financial advice. Always validate assumptions and constraints against your IPS, taxes, account restrictions, and fiduciary requirements.
+- Tax-lot level holdings storage (SQLite via SQLAlchemy)
+- Broker CSV import with **auto-detection** of Fidelity, Schwab, and Vanguard column formats
+- 401(k) plan options and allocation tracking
+- API-key authentication on all portfolio and analytics routes
+
+### Analytics pipeline
+
+| Layer | What it does |
+|---|---|
+| **Market data** | Parallel per-ticker fetches via `yf.Ticker().history()` (thread-safe), 10-min TTL cache |
+| **TAA signals** | Trend (moving average cross) + momentum (12-1 proxy) overlay per ticker |
+| **ML forecast** | Per-ticker RandomForest (50 trees, parallel fit) expected-return estimate, 10-min cache |
+| **SAA optimizer** | Max-Sharpe portfolio via `scipy.optimize.minimize` with weight caps and volatility target |
+| **Recommendation** | Blends SAA weights with TAA tilt and ML forecast; returns final allocations + portfolio metrics |
+
+All analytics run in **background threads** and are polled by the dashboard  no HTTP timeouts regardless of universe size.
+
+### Rebalance planner
+
+- Tax-lot aware: prefers harvesting losses first, then long-term lots
+- Returns per-trade estimated tax drag
+- **Copy Weights to Rebalance** button auto-populates rebalance targets from the latest recommendation
+
+### Dashboard layout
+
+| Tab | Left panel | Right panel |
+|---|---|---|
+| **Import & Signals** | Broker CSV upload | Tactical signals table (colour-coded BUY/SELL) |
+| **Allocation & Rebalance** | Recommendation + donut chart + portfolio metrics | Tax-lot rebalance planner |
+
+---
 
 ## Quick start
 
-### One-click startup (recommended)
-
-First time only:
+### First-time setup
 
 ```powershell
 cd investment_app
@@ -38,128 +53,170 @@ python -m venv .venv
 pip install -e .
 ```
 
-Every time you want to use the app:
+### Every-day launch (recommended)
 
 ```powershell
-cd investment_app
 .\start.ps1
 ```
 
-`start.ps1` automatically:
+`start.ps1`:
+- Kills any stale processes on ports 8000 / 8501
 - Creates `.env` from `.env.example` on first run
-- Starts the API on port `8000`
-- Starts the Streamlit dashboard on port `8501`
-- Prints your LAN IP so you can open on your phone (same Wi-Fi)
+- Launches the API (`localhost:8000`) and dashboard (`localhost:8501`) in separate windows
+- Prints your LAN IP so you can open the app on a phone over the same Wi-Fi
 
-### Manual startup (two terminals)
+### Manual launch (two terminals)
 
-Terminal 1 — API:
 ```powershell
+# Terminal 1  API
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-Terminal 2 — Dashboard:
-```powershell
+
+# Terminal 2 — Dashboard
 .\.venv\Scripts\python.exe -m streamlit run dashboard/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
 ```
 
-Dashboard includes two tabs:
+---
 
-- `Signals & Allocation`
-- `Import & Rebalance` (CSV upload + tax-lot rebalance preview)
+## Typical workflow
 
-## API security
+1. **Import & Signals tab** → upload your broker CSV → click **Import CSV**
+2. **Import & Signals tab** → set your ticker universe in the sidebar → click **Refresh Signals**
+3. **Allocation & Rebalance tab** → click **Generate Recommendation** (runs in background, auto-polls every 3 s)
+4. **Allocation & Rebalance tab** → review the donut chart and allocation table → click **Copy Weights to Rebalance →**
+5. **Allocation & Rebalance tab** → confirm/adjust tax rates → click **Generate Rebalance Plan**
+6. Execute the resulting trade list at your broker
 
-All `/portfolio/*` and `/analytics/*` routes require `X-API-Key`.
-
-- Set `API_KEY` in `.env`
-- Use the same key in dashboard sidebar (`X-API-Key` field)
-
-PowerShell example:
-
-```powershell
-$headers = @{ "X-API-Key" = "change-me" }
-Invoke-RestMethod -Headers $headers -Method Get -Uri "http://127.0.0.1:8000/analytics/signals?tickers=SPY,QQQ,AGG"
-```
-
-## API overview
-
-- `GET /health`
-- `POST /portfolio/holdings`
-- `GET /portfolio/holdings`
-- `POST /portfolio/holdings/import-csv`
-- `POST /portfolio/rebalance/plan`
-- `POST /portfolio/401k/options`
-- `GET /portfolio/401k/options`
-- `POST /portfolio/401k/allocation`
-- `GET /portfolio/401k/allocation`
-- `GET /analytics/signals?tickers=SPY,QQQ,AGG`
-- `GET /analytics/recommendation?tickers=SPY,QQQ,AGG`
+---
 
 ## Broker CSV import
 
-Endpoint: `POST /portfolio/holdings/import-csv`
+Supported brokers (auto-detected, no column renaming needed):
 
-Required columns: `ticker`, `shares`, `cost_basis`
+| Broker | Detected columns |
+|---|---|
+| **Fidelity** | `Symbol`, `Quantity`, `Cost Basis Total`  skips preamble rows |
+| **Schwab** | `Symbol`, `Quantity`, `Cost Basis Total` |
+| **Vanguard** | `Ticker Symbol`, `Shares`, `Average Cost Basis` |
+| **Generic** | Falls back to `ticker`, `shares`, `cost_basis` |
 
-Optional columns:
+A sample file is at [`samples/holdings_example.csv`](samples/holdings_example.csv).
 
-- `acquired_at` (format: `YYYY-MM-DD`) — used for short/long-term tax classification
-- `account_type` — `taxable`, `401k`, or `ira` (overrides the UI dropdown if present)
+Rules:
+- `cost_basis` = **total** cost (not per share)
+- Multiple rows for the same ticker = separate tax lots
+- Cash sweep tickers (e.g. `SPAXX**`) are skipped automatically
+- `account_type` column (if present) overrides the UI dropdown  valid values: `taxable`, `401k`, `ira`
+- Dates accepted as `YYYY-MM-DD`, `MM/DD/YYYY`, or `MM/DD/YY`
 
-A ready-to-edit sample file is at [samples/holdings_example.csv](samples/holdings_example.csv):
+---
 
-```csv
-ticker,shares,cost_basis,acquired_at,account_type
-VTI,15.000,4125.00,2021-03-10,taxable
-VXUS,20.000,1980.00,2021-06-01,taxable
-BND,25.000,1875.00,2020-08-12,taxable
-GLD,5.000,1050.00,2022-09-05,taxable
+## API reference
+
+### Authentication
+
+All `/portfolio/*` and `/analytics/*` routes require the header `X-API-Key`.
+Set `API_KEY` in `.env`; enter the same value in the dashboard sidebar.
+
+```powershell
+$h = @{ "X-API-Key" = "change-me" }
+Invoke-RestMethod -Headers $h -Uri "http://127.0.0.1:8000/health"
 ```
 
-- `cost_basis` = total cost (not per share)
-- Multiple lots for the same ticker = multiple rows
-- 401(k) holdings use `account_type=401k`; they will not be included in taxable rebalance plans
+### Endpoints
 
-## Tax-lot rebalancing plan
+#### Health
 
-Endpoint: `POST /portfolio/rebalance/plan`
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/health` | Liveness check (no auth required) |
 
-Request body example:
+#### Portfolio
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/portfolio/holdings` | Add a single holding / lot |
+| `GET` | `/portfolio/holdings` | List all holdings |
+| `POST` | `/portfolio/holdings/import-csv` | Bulk import from broker CSV |
+| `POST` | `/portfolio/rebalance/plan` | Generate tax-lot rebalance plan |
+| `POST` | `/portfolio/401k/options` | Add a 401(k) fund option |
+| `GET` | `/portfolio/401k/options` | List 401(k) fund options |
+| `POST` | `/portfolio/401k/allocation` | Set current 401(k) allocations |
+| `GET` | `/portfolio/401k/allocation` | Get current 401(k) allocations |
+
+#### Analytics (async job pattern)
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/analytics/signals/start` | Start TAA signal job; returns `{job_id}` immediately |
+| `POST` | `/analytics/recommendation/start` | Start recommendation job; returns `{job_id}` immediately |
+| `GET` | `/analytics/jobs/{job_id}` | Poll status: `pending` / `running` / `done` / `error` |
+| `GET` | `/analytics/signals` | Synchronous signals (small universes / scripting) |
+| `GET` | `/analytics/recommendation` | Synchronous recommendation (small universes / scripting) |
+
+Query param for all analytics routes: `?tickers=SPY,QQQ,AGG,GLD`
+
+#### Rebalance plan request body
 
 ```json
 {
-  "target_weights": {
-    "VTI": 0.55,
-    "VXUS": 0.25,
-    "BND": 0.20
-  },
+  "target_weights": { "VTI": 0.55, "VXUS": 0.25, "BND": 0.20 },
   "short_term_tax_rate": 0.37,
   "long_term_tax_rate": 0.20,
   "min_trade_value": 50
 }
 ```
 
-The planner prefers loss lots first, then lower-tax lots, and returns estimated tax drag per sell trade.
+---
 
-## Deploy for phone access (Render)
+## Project layout
 
-This repo includes [render.yaml](render.yaml) for Blueprint deploy.
+```
+investment_app/
+ app/
+    main.py               # FastAPI app factory
+    models.py             # SQLAlchemy ORM models
+    schemas.py            # Pydantic request/response schemas
+    config.py             # Settings (reads .env)
+    security.py           # API-key dependency
+    job_store.py          # In-memory async job store (TTL 5 min)
+    routers/
+       analytics.py      # Signal + recommendation endpoints
+       portfolio.py      # Holdings, CSV import, rebalance, 401k
+    services/
+        market_data.py    # Parallel yfinance fetcher + TTL cache
+        signals.py        # TAA momentum/trend signals
+        forecast.py       # RandomForest return forecasts + cache
+        recommendation.py # SAA/TAA/ML blended optimizer
+        rebalance.py      # Tax-lot rebalance planner
+ dashboard/
+    streamlit_app.py      # Two-tab Streamlit UI with async polling
+ samples/
+    holdings_example.csv  # Sample broker CSV (8 lots)
+ start.ps1                 # One-click launcher (Windows)
+ pyproject.toml
+ .env.example
+```
+
+---
+
+## Deploying for phone access (Render)
+
+This repo includes [`render.yaml`](render.yaml) for Blueprint deploy.
 
 1. Push your latest changes to GitHub
-2. In Render, choose **New +** → **Blueprint**
-3. Select this repository
-4. Set these environment variables in Render:
-  - `investment-app-api`: `API_KEY` (choose a strong key)
-  - `investment-app-dashboard`: `API_KEY` (same value as API)
-5. Deploy both services
-6. Open `https://investment-app-dashboard.onrender.com` on your phone
+2. In Render → **New +** → **Blueprint** → select this repo
+3. Set environment variables:
+   - `investment-app-api` → `API_KEY` (choose a strong secret)
+   - `investment-app-dashboard` → `API_KEY` (same value), `API_BASE` (your API service public URL)
+4. Deploy both services
+5. Open the dashboard URL on your phone
 
-After deploy, if your dashboard URL differs, update the Live badge link above.
+---
 
-## Suggested next upgrades
+## Possible future enhancements
 
-- Broker sync adapters (Schwab/Fidelity/IBKR CSV/API)
-- Tax-lot aware rebalancing and wash-sale checks
+- Wash-sale detection and tracking across lots
 - Brinson attribution and decision journal
-- Regime switching model (Markov/HMM)
-- Macro feature store (FRED inflation/rates/employment)
+- Regime-switching model (Markov/HMM) for TAA overlay
+- Macro feature store (FRED: inflation, rates, employment)
+- Interactive drift chart: current weights vs target over time
