@@ -1,4 +1,4 @@
-import os
+﻿import os
 import time
 
 import pandas as pd
@@ -12,6 +12,10 @@ st.set_page_config(page_title="Investment App", layout="wide")
 st.title("Personal Portfolio Intelligence")
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 def parse_target_weights(text: str) -> dict[str, float]:
     target_weights: dict[str, float] = {}
     for entry in text.split(","):
@@ -19,7 +23,7 @@ def parse_target_weights(text: str) -> dict[str, float]:
         if not chunk:
             continue
         if ":" not in chunk:
-            raise ValueError(f"Invalid entry '{chunk}'. Use format TICKER:WEIGHT")
+            raise ValueError(f"Invalid entry {chunk!r}. Use format TICKER:WEIGHT")
         ticker, value = chunk.split(":", 1)
         target_weights[ticker.strip().upper()] = float(value.strip())
     if not target_weights:
@@ -46,6 +50,17 @@ def safe_post(url: str, **kwargs):
     except requests.RequestException as exc:
         return None, str(exc)
 
+
+def allocs_to_weight_string(allocations: list) -> str:
+    """Convert allocation list to TICKER:weight string for rebalance input."""
+    parts = [f"{a['ticker']}:{a['final_weight']:.4f}" for a in allocations]
+    return ", ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
+
 with st.sidebar:
     st.header("API")
     api_base = st.text_input("API Base URL", value=os.getenv("API_BASE", DEFAULT_API_BASE))
@@ -57,27 +72,82 @@ with st.sidebar:
 
 auth_headers = build_auth_headers(api_key)
 
-tab1, tab2 = st.tabs(["Signals & Allocation", "Import & Rebalance"])
+# Initialise session state keys once
+for _k in ("signals_job", "signals_result", "rec_job", "rec_result", "prefill_weights"):
+    if _k not in st.session_state:
+        st.session_state[_k] = None
 
+
+def _poll(job_id: str):
+    """Poll a job once; return job dict or None on error."""
+    r, err = safe_get(f"{api_base}/analytics/jobs/{job_id}", headers=auth_headers, timeout=10)
+    if err or not r.ok:
+        return None
+    return r.json()
+
+
+# ---------------------------------------------------------------------------
+# TABS
+# Tab 1 — Import & Signals
+# Tab 2 — Allocation & Rebalance
+# ---------------------------------------------------------------------------
+
+tab1, tab2 = st.tabs(["Import & Signals", "Allocation & Rebalance"])
+
+# ===========================================================================
+# TAB 1 — Broker CSV Import  |  Tactical Signals
+# ===========================================================================
 with tab1:
-    # Initialise session state keys
-    for _k in ("signals_job", "signals_result", "rec_job", "rec_result"):
-        if _k not in st.session_state:
-            st.session_state[_k] = None
+    imp_col, sig_col = st.columns([1, 1], gap="large")
 
-    def _poll(job_id: str) -> dict | None:
-        """Poll once; return job dict or None on error."""
-        r, err = safe_get(f"{api_base}/analytics/jobs/{job_id}", headers=auth_headers, timeout=10)
-        if err or not r.ok:
-            return None
-        return r.json()
+    # Left — Broker CSV Import
+    with imp_col:
+        st.subheader("Broker CSV Import")
+        uploaded = st.file_uploader("Upload holdings CSV", type=["csv"])
+        import_account_type = st.selectbox(
+            "Account Type", options=["taxable", "401k", "ira"], index=0
+        )
+        import_source = st.text_input("Broker Source Label", value="csv-import")
 
-    col1, col2 = st.columns(2)
+        if st.button("Import CSV", use_container_width=True):
+            if uploaded is None:
+                st.warning("Please upload a CSV file first.")
+            else:
+                files = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
+                params = {"account_type": import_account_type, "broker_source": import_source}
+                r, err = safe_post(
+                    f"{api_base}/portfolio/holdings/import-csv",
+                    files=files,
+                    params=params,
+                    headers=auth_headers,
+                    timeout=60,
+                )
+                if err:
+                    st.error(f"Connection error: {err}")
+                elif r.ok:
+                    payload = r.json()
+                    st.success(
+                        f"Imported {payload['created_holdings']} holdings and "
+                        f"{payload['created_lots']} lots. "
+                        f"Skipped {payload['skipped_rows']} rows."
+                    )
+                    if payload.get("warnings"):
+                        st.caption("Warnings: " + " | ".join(payload["warnings"]))
+                else:
+                    st.error(f"API error: {r.text}")
 
-    with col1:
+        st.divider()
+        st.caption(
+            "Supported formats: Fidelity, Schwab, and Vanguard CSV exports. "
+            "See samples/holdings_example.csv for reference."
+        )
+
+    # Right — Tactical Signals
+    with sig_col:
         st.subheader("Tactical Signals")
+        st.caption(f"Universe: {', '.join(tickers)} (edit in sidebar)")
 
-        if st.button("Refresh Signals"):
+        if st.button("Refresh Signals", use_container_width=True):
             r, err = safe_post(
                 f"{api_base}/analytics/signals/start",
                 params={"tickers": ",".join(tickers)},
@@ -99,7 +169,7 @@ with tab1:
                 st.error("Lost contact with job — try again.")
                 st.session_state.signals_job = None
             elif job["status"] in ("pending", "running"):
-                with st.spinner("Fetching market data… (running in background, page auto-refreshes)"):
+                with st.spinner("Fetching market data... auto-refreshes every 3 s"):
                     time.sleep(3)
                 st.rerun()
             elif job["status"] == "done":
@@ -110,12 +180,36 @@ with tab1:
                 st.session_state.signals_job = None
 
         if st.session_state.signals_result:
-            st.dataframe(pd.DataFrame(st.session_state.signals_result), use_container_width=True)
+            signals_df = pd.DataFrame(st.session_state.signals_result)
 
-    with col2:
+            def _colour_signal(val):
+                if str(val).upper() == "BUY":
+                    return "background-color: #d4edda; color: #155724"
+                if str(val).upper() == "SELL":
+                    return "background-color: #f8d7da; color: #721c24"
+                return ""
+
+            if "signal" in signals_df.columns:
+                st.dataframe(
+                    signals_df.style.applymap(_colour_signal, subset=["signal"]),
+                    use_container_width=True,
+                )
+            else:
+                st.dataframe(signals_df, use_container_width=True)
+
+
+# ===========================================================================
+# TAB 2 — Allocation Recommendation  |  Rebalance Planner
+# ===========================================================================
+with tab2:
+    rec_col, reb_col = st.columns([1, 1], gap="large")
+
+    # Left — Allocation Recommendation
+    with rec_col:
         st.subheader("Allocation Recommendation")
+        st.caption(f"Universe: {', '.join(tickers)} (edit in sidebar)")
 
-        if st.button("Generate Recommendation"):
+        if st.button("Generate Recommendation", use_container_width=True):
             r, err = safe_post(
                 f"{api_base}/analytics/recommendation/start",
                 params={"tickers": ",".join(tickers)},
@@ -137,7 +231,7 @@ with tab1:
                 st.error("Lost contact with job — try again.")
                 st.session_state.rec_job = None
             elif job["status"] in ("pending", "running"):
-                with st.spinner("Running optimizer + ML forecast… (running in background, page auto-refreshes)"):
+                with st.spinner("Running optimizer + ML forecast... auto-refreshes every 3 s"):
                     time.sleep(3)
                 st.rerun()
             elif job["status"] == "done":
@@ -152,82 +246,100 @@ with tab1:
             alloc_df = pd.DataFrame(payload["allocations"])
             ret = payload.get("expected_return")
             vol = payload.get("expected_volatility")
-            st.metric("Expected Return", f"{ret:.2%}" if ret is not None else "N/A")
-            st.metric("Expected Volatility", f"{vol:.2%}" if vol is not None else "N/A")
-            fig = px.pie(alloc_df, names="ticker", values="final_weight", title="Final Allocation")
+
+            m1, m2 = st.columns(2)
+            m1.metric("Expected Return", f"{ret:.2%}" if ret is not None else "N/A")
+            m2.metric("Expected Volatility", f"{vol:.2%}" if vol is not None else "N/A")
+
+            fig = px.pie(
+                alloc_df,
+                names="ticker",
+                values="final_weight",
+                title="Recommended Allocation",
+                hole=0.35,
+            )
+            fig.update_traces(textposition="inside", textinfo="percent+label")
             st.plotly_chart(fig, use_container_width=True)
+
             st.dataframe(alloc_df, use_container_width=True)
-            st.caption(" | ".join(payload["notes"]))
 
-with tab2:
-    st.subheader("Broker CSV Import")
-    uploaded = st.file_uploader("Upload holdings CSV", type=["csv"])
-    import_account_type = st.selectbox("Account Type", options=["taxable", "401k", "ira"], index=0)
-    import_source = st.text_input("Broker Source Label", value="csv-import")
-
-    if st.button("Import CSV"):
-        if uploaded is None:
-            st.warning("Please upload a CSV file first.")
-        else:
-            files = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
-            params = {"account_type": import_account_type, "broker_source": import_source}
-            r, err = safe_post(
-                f"{api_base}/portfolio/holdings/import-csv",
-                files=files,
-                params=params,
-                headers=auth_headers,
-                timeout=60,
-            )
-            if err:
-                st.error(f"Connection error: {err}")
-            elif r.ok:
-                payload = r.json()
-                st.success(
-                    f"Imported {payload['created_holdings']} holdings and {payload['created_lots']} lots. "
-                    f"Skipped {payload['skipped_rows']} rows."
-                )
-                if payload.get("warnings"):
-                    st.caption("Warnings: " + " | ".join(payload["warnings"]))
-            else:
-                st.error(f"API error: {r.text}")
-
-    st.subheader("Tax-Lot Rebalance Plan")
-    targets_text = st.text_area(
-        "Target Weights (TICKER:WEIGHT, comma-separated)",
-        value="VTI:0.55,VXUS:0.25,BND:0.20",
-        height=100,
-    )
-    short_rate = st.number_input("Short-Term Tax Rate", min_value=0.0, max_value=1.0, value=0.37, step=0.01)
-    long_rate = st.number_input("Long-Term Tax Rate", min_value=0.0, max_value=1.0, value=0.20, step=0.01)
-    min_trade_value = st.number_input("Minimum Trade Value ($)", min_value=0.0, value=50.0, step=10.0)
-
-    if st.button("Generate Rebalance Plan"):
-        try:
-            target_weights = parse_target_weights(targets_text)
-        except ValueError as exc:
-            st.error(str(exc))
-        else:
-            body = {
-                "target_weights": target_weights,
-                "short_term_tax_rate": short_rate,
-                "long_term_tax_rate": long_rate,
-                "min_trade_value": min_trade_value,
-            }
-            r, err = safe_post(
-                f"{api_base}/portfolio/rebalance/plan",
-                json=body,
-                headers=auth_headers,
-                timeout=60,
-            )
-            if err:
-                st.error(f"Connection error: {err}")
-            elif r.ok:
-                payload = r.json()
-                st.metric("Portfolio Value", f"${payload['portfolio_value']:,.2f}")
-                st.metric("Estimated Tax Impact", f"${payload['estimated_total_tax_impact']:,.2f}")
-                trades = pd.DataFrame(payload["trades"])
-                if not trades.empty:
-                    st.dataframe(trades, use_container_width=True)
+            if payload.get("notes"):
                 st.caption(" | ".join(payload["notes"]))
+
+            # --- Copy to Rebalance ---
+            if st.button("Copy Weights to Rebalance ->", use_container_width=True, type="primary"):
+                st.session_state.prefill_weights = allocs_to_weight_string(payload["allocations"])
+                st.success("Weights copied — switch to the Rebalance panel on the right.")
+
+    # Right — Tax-Lot Rebalance Planner
+    with reb_col:
+        st.subheader("Tax-Lot Rebalance Plan")
+
+        _default_weights = (
+            st.session_state.prefill_weights
+            if st.session_state.prefill_weights
+            else "VTI:0.55,VXUS:0.25,BND:0.20"
+        )
+
+        targets_text = st.text_area(
+            "Target Weights (TICKER:WEIGHT, comma-separated)",
+            value=_default_weights,
+            height=120,
+            help="Fill manually or click 'Copy Weights to Rebalance' on the left.",
+        )
+
+        c1, c2, c3 = st.columns(3)
+        short_rate = c1.number_input(
+            "Short-Term Tax Rate", min_value=0.0, max_value=1.0, value=0.37, step=0.01
+        )
+        long_rate = c2.number_input(
+            "Long-Term Tax Rate", min_value=0.0, max_value=1.0, value=0.20, step=0.01
+        )
+        min_trade_value = c3.number_input(
+            "Min Trade ($)", min_value=0.0, value=50.0, step=10.0
+        )
+
+        if st.button("Generate Rebalance Plan", use_container_width=True):
+            try:
+                target_weights = parse_target_weights(targets_text)
+            except ValueError as exc:
+                st.error(str(exc))
             else:
-                st.error(f"API error: {r.text}")
+                body = {
+                    "target_weights": target_weights,
+                    "short_term_tax_rate": short_rate,
+                    "long_term_tax_rate": long_rate,
+                    "min_trade_value": min_trade_value,
+                }
+                r, err = safe_post(
+                    f"{api_base}/portfolio/rebalance/plan",
+                    json=body,
+                    headers=auth_headers,
+                    timeout=60,
+                )
+                if err:
+                    st.error(f"Connection error: {err}")
+                elif r.ok:
+                    payload = r.json()
+                    rv1, rv2 = st.columns(2)
+                    rv1.metric("Portfolio Value", f"${payload['portfolio_value']:,.2f}")
+                    rv2.metric(
+                        "Est. Tax Impact",
+                        f"${payload['estimated_total_tax_impact']:,.2f}",
+                    )
+                    trades = pd.DataFrame(payload["trades"])
+                    if not trades.empty:
+                        st.dataframe(trades, use_container_width=True)
+                    else:
+                        st.info("No trades needed — portfolio is already within tolerance.")
+                    if payload.get("notes"):
+                        st.caption(" | ".join(payload["notes"]))
+                else:
+                    st.error(f"API error: {r.text}")
+
+        st.divider()
+        st.caption(
+            "Import your holdings in the Import & Signals tab first, then generate a "
+            "Recommendation and press Copy Weights to Rebalance to pre-fill targets above."
+        )
+
