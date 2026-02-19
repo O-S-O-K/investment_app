@@ -1,5 +1,7 @@
 # Investment App (Personal Portfolio Intelligence)
 
+[![Live App](https://img.shields.io/badge/Live-App-brightgreen)](https://investment-app-dashboard.onrender.com)
+
 This MVP helps you mirror your real portfolio, track 401(k) allocations, and generate data-driven suggestions using a combined SAA/TAA framework.
 
 ## What this includes
@@ -126,6 +128,21 @@ Request body example:
 ```
 
 The planner prefers loss lots first, then lower-tax lots, and returns estimated tax drag per sell trade.
+
+## Deploy for phone access (Render)
+
+This repo includes [render.yaml](render.yaml) for Blueprint deploy.
+
+1. Push your latest changes to GitHub
+2. In Render, choose **New +** → **Blueprint**
+3. Select this repository
+4. Set these environment variables in Render:
+  - `investment-app-api`: `API_KEY` (choose a strong key)
+  - `investment-app-dashboard`: `API_KEY` (same value as API)
+5. Deploy both services
+6. Open `https://investment-app-dashboard.onrender.com` on your phone
+
+After deploy, if your dashboard URL differs, update the Live badge link above.
 
 ## Suggested next upgrades
 
