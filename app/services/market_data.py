@@ -1,12 +1,38 @@
+import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from time import monotonic
 
 import pandas as pd
 import yfinance as yf
 
+logger = logging.getLogger(__name__)
+
 # Simple in-process TTL cache — avoids re-downloading on back-to-back calls
 _CACHE: dict[tuple, tuple] = {}   # key -> (timestamp, DataFrame)
 _CACHE_TTL_SECONDS = 600          # 10 minutes
+
+_PER_TICKER_TIMEOUT = 25          # seconds before giving up on a single ticker
+
+
+def _fetch_one(ticker: str, start: str, end: str) -> tuple[str, pd.Series | None]:
+    """Download a single ticker and return (ticker, close_series). Returns None on failure."""
+    try:
+        data = yf.download(
+            tickers=ticker,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+        )
+        if data.empty:
+            return ticker, None
+        # flat columns for single ticker
+        col = "Close" if "Close" in data.columns else data.columns[0]
+        return ticker, data[col].rename(ticker)
+    except Exception as exc:
+        logger.warning("yfinance failed for %s: %s", ticker, exc)
+        return ticker, None
 
 
 def fetch_adjusted_close(tickers: list[str], years: int = 5, months: int = 0) -> pd.DataFrame:
@@ -20,28 +46,34 @@ def fetch_adjusted_close(tickers: list[str], years: int = 5, months: int = 0) ->
 
     end = datetime.utcnow().date()
     start = end - timedelta(days=365 * years + 30 * months)
+    start_str, end_str = start.isoformat(), end.isoformat()
 
-    data = yf.download(
-        tickers=tickers,
-        start=start.isoformat(),
-        end=end.isoformat(),
-        auto_adjust=True,
-        progress=False,
-        group_by="ticker",
-    )
+    # Download each ticker in parallel; skip any that time out or error
+    series_map: dict[str, pd.Series] = {}
+    with ThreadPoolExecutor(max_workers=min(len(tickers), 12)) as pool:
+        futures = {pool.submit(_fetch_one, t, start_str, end_str): t for t in tickers}
+        try:
+            for future in as_completed(futures, timeout=_PER_TICKER_TIMEOUT * 2):
+                t, series = future.result()
+                if series is not None:
+                    series_map[t] = series
+                else:
+                    logger.warning("No data returned for ticker %s — will be excluded", t)
+        except TimeoutError:
+            # Collect whatever completed before the deadline
+            for future, t in futures.items():
+                if future.done() and not future.exception():
+                    _, series = future.result()
+                    if series is not None:
+                        series_map[t] = series
+            logger.warning("Timed out waiting for some tickers; proceeding with %d/%d", len(series_map), len(tickers))
 
-    if isinstance(data.columns, pd.MultiIndex):
-        # multi-ticker: columns are (field, ticker)
-        if "Close" in data.columns.get_level_values(0):
-            prices = data["Close"].copy()
-        else:
-            prices = data.xs("Close", axis=1, level=1).copy()
-    else:
-        # single ticker: flat columns
-        close_col = "Close" if "Close" in data.columns else data.columns[0]
-        prices = data[[close_col]].rename(columns={close_col: tickers[0]})
+    if not series_map:
+        raise ValueError("No market data could be fetched for any of the requested tickers.")
 
-    # ensure all requested tickers are present
+    prices = pd.DataFrame(series_map)
+
+    # Ensure all requested tickers present (fill missing with NaN)
     for t in tickers:
         if t not in prices.columns:
             prices[t] = float("nan")
