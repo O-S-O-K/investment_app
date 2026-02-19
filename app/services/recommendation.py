@@ -49,5 +49,5 @@ def build_recommendation(tickers: list[str]) -> dict:
         "expected_return": round(portfolio_return, 4),
         "expected_volatility": round(portfolio_vol, 4),
         "notes": notes,
-        "allocations": allocations,
+        "allocations": [a.model_dump() for a in allocations],
     }

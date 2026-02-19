@@ -1,4 +1,5 @@
 import os
+import time
 
 import pandas as pd
 import plotly.express as px
@@ -59,48 +60,102 @@ auth_headers = build_auth_headers(api_key)
 tab1, tab2 = st.tabs(["Signals & Allocation", "Import & Rebalance"])
 
 with tab1:
+    # Initialise session state keys
+    for _k in ("signals_job", "signals_result", "rec_job", "rec_result"):
+        if _k not in st.session_state:
+            st.session_state[_k] = None
+
+    def _poll(job_id: str) -> dict | None:
+        """Poll once; return job dict or None on error."""
+        r, err = safe_get(f"{api_base}/analytics/jobs/{job_id}", headers=auth_headers, timeout=10)
+        if err or not r.ok:
+            return None
+        return r.json()
+
     col1, col2 = st.columns(2)
+
     with col1:
         st.subheader("Tactical Signals")
+
         if st.button("Refresh Signals"):
-            with st.spinner(f"Fetching market data for {len(tickers)} tickers — may take 30–60 s on first run…"):
-                r, err = safe_get(
-                    f"{api_base}/analytics/signals",
-                    params={"tickers": ",".join(tickers)},
-                    headers=auth_headers,
-                    timeout=180,
-                )
+            r, err = safe_post(
+                f"{api_base}/analytics/signals/start",
+                params={"tickers": ",".join(tickers)},
+                headers=auth_headers,
+                timeout=10,
+            )
             if err:
-                st.error(f"Connection error: {err}")
+                st.error(f"Could not reach API: {err}")
             elif r.ok:
-                signal_df = pd.DataFrame(r.json())
-                st.dataframe(signal_df, use_container_width=True)
+                st.session_state.signals_job = r.json()["job_id"]
+                st.session_state.signals_result = None
+                st.rerun()
             else:
                 st.error(f"API error: {r.text}")
 
+        if st.session_state.signals_job:
+            job = _poll(st.session_state.signals_job)
+            if job is None:
+                st.error("Lost contact with job — try again.")
+                st.session_state.signals_job = None
+            elif job["status"] in ("pending", "running"):
+                with st.spinner("Fetching market data… (running in background, page auto-refreshes)"):
+                    time.sleep(3)
+                st.rerun()
+            elif job["status"] == "done":
+                st.session_state.signals_result = job["result"]
+                st.session_state.signals_job = None
+            elif job["status"] == "error":
+                st.error(f"Signals failed: {job['error']}")
+                st.session_state.signals_job = None
+
+        if st.session_state.signals_result:
+            st.dataframe(pd.DataFrame(st.session_state.signals_result), use_container_width=True)
+
     with col2:
         st.subheader("Allocation Recommendation")
+
         if st.button("Generate Recommendation"):
-            with st.spinner(f"Running optimizer + ML forecast for {len(tickers)} tickers — may take up to 90 s on first run…"):
-                r, err = safe_get(
-                    f"{api_base}/analytics/recommendation",
-                    params={"tickers": ",".join(tickers)},
-                    headers=auth_headers,
-                    timeout=180,
-                )
+            r, err = safe_post(
+                f"{api_base}/analytics/recommendation/start",
+                params={"tickers": ",".join(tickers)},
+                headers=auth_headers,
+                timeout=10,
+            )
             if err:
-                st.error(f"Connection error: {err}")
+                st.error(f"Could not reach API: {err}")
             elif r.ok:
-                payload = r.json()
-                alloc_df = pd.DataFrame(payload["allocations"])
-                st.metric("Expected Return", f"{payload['expected_return']:.2%}")
-                st.metric("Expected Volatility", f"{payload['expected_volatility']:.2%}")
-                fig = px.pie(alloc_df, names="ticker", values="final_weight", title="Final Allocation")
-                st.plotly_chart(fig, use_container_width=True)
-                st.dataframe(alloc_df, use_container_width=True)
-                st.caption(" | ".join(payload["notes"]))
+                st.session_state.rec_job = r.json()["job_id"]
+                st.session_state.rec_result = None
+                st.rerun()
             else:
                 st.error(f"API error: {r.text}")
+
+        if st.session_state.rec_job:
+            job = _poll(st.session_state.rec_job)
+            if job is None:
+                st.error("Lost contact with job — try again.")
+                st.session_state.rec_job = None
+            elif job["status"] in ("pending", "running"):
+                with st.spinner("Running optimizer + ML forecast… (running in background, page auto-refreshes)"):
+                    time.sleep(3)
+                st.rerun()
+            elif job["status"] == "done":
+                st.session_state.rec_result = job["result"]
+                st.session_state.rec_job = None
+            elif job["status"] == "error":
+                st.error(f"Recommendation failed: {job['error']}")
+                st.session_state.rec_job = None
+
+        if st.session_state.rec_result:
+            payload = st.session_state.rec_result
+            alloc_df = pd.DataFrame(payload["allocations"])
+            st.metric("Expected Return", f"{payload['expected_return']:.2%}")
+            st.metric("Expected Volatility", f"{payload['expected_volatility']:.2%}")
+            fig = px.pie(alloc_df, names="ticker", values="final_weight", title="Final Allocation")
+            st.plotly_chart(fig, use_container_width=True)
+            st.dataframe(alloc_df, use_container_width=True)
+            st.caption(" | ".join(payload["notes"]))
 
 with tab2:
     st.subheader("Broker CSV Import")
