@@ -100,3 +100,35 @@ class RebalancePlanResponse(BaseModel):
     estimated_total_tax_impact: float
     trades: list[RebalanceTrade]
     notes: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Journal
+# ---------------------------------------------------------------------------
+
+class JournalEntryCreate(BaseModel):
+    ticker: str = Field(min_length=1, max_length=12)
+    action: str = Field(description="BUY / SELL / HOLD / REBALANCE")
+    rationale: str = ""
+    expected_return: float | None = None
+    expected_holding_days: int | None = None
+
+
+class JournalEntryUpdate(BaseModel):
+    outcome: str | None = None
+    closed_at: datetime | None = None
+
+
+class JournalEntryOut(BaseModel):
+    id: int
+    created_at: datetime
+    ticker: str
+    action: str
+    rationale: str
+    expected_return: float | None
+    expected_holding_days: int | None
+    outcome: str | None
+    closed_at: datetime | None
+
+    class Config:
+        from_attributes = True

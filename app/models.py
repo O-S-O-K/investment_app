@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -53,3 +53,29 @@ class FourOhOneKAllocation(Base):
     as_of: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
     option = relationship("FourOhOneKOption")
+
+
+class PortfolioSnapshot(Base):
+    """Periodic portfolio value record used for drawdown / HWM tracking."""
+
+    __tablename__ = "portfolio_snapshots"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    portfolio_value: Mapped[float] = mapped_column(Float)
+
+
+class JournalEntry(Base):
+    """Decision journal — records investment decisions and their outcomes."""
+
+    __tablename__ = "journal_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    ticker: Mapped[str] = mapped_column(String(12), index=True)
+    action: Mapped[str] = mapped_column(String(32))          # BUY / SELL / HOLD / REBALANCE
+    rationale: Mapped[str] = mapped_column(Text, default="")
+    expected_return: Mapped[float | None] = mapped_column(Float, nullable=True)
+    expected_holding_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(Text, nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
