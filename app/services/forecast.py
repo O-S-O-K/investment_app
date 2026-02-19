@@ -6,7 +6,7 @@ from app.services.market_data import compute_returns, fetch_adjusted_close
 
 
 def forecast_expected_returns(tickers: list[str]) -> pd.Series:
-    prices = fetch_adjusted_close(tickers=tickers, years=5)
+    prices = fetch_adjusted_close(tickers=tickers, years=2)
     returns = compute_returns(prices)
 
     predictions: dict[str, float] = {}

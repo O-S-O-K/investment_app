@@ -84,7 +84,7 @@ with tab1:
                 f"{api_base}/analytics/recommendation",
                 params={"tickers": ",".join(tickers)},
                 headers=auth_headers,
-                timeout=60,
+                timeout=90,
             )
             if err:
                 st.error(f"Connection error: {err}")
