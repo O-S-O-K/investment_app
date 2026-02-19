@@ -9,7 +9,7 @@ from app.services.signals import compute_tactical_signals
 
 
 def build_recommendation(tickers: list[str]) -> dict:
-    prices = fetch_adjusted_close(tickers=tickers, years=2)
+    prices = fetch_adjusted_close(tickers=tickers, years=2, months=6)
     returns = compute_returns(prices)
 
     historical_mu = returns.mean() * settings.annualization

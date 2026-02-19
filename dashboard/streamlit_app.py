@@ -63,12 +63,13 @@ with tab1:
     with col1:
         st.subheader("Tactical Signals")
         if st.button("Refresh Signals"):
-            r, err = safe_get(
-                f"{api_base}/analytics/signals",
-                params={"tickers": ",".join(tickers)},
-                headers=auth_headers,
-                timeout=60,
-            )
+            with st.spinner(f"Fetching market data for {len(tickers)} tickers — may take 30–60 s on first run…"):
+                r, err = safe_get(
+                    f"{api_base}/analytics/signals",
+                    params={"tickers": ",".join(tickers)},
+                    headers=auth_headers,
+                    timeout=180,
+                )
             if err:
                 st.error(f"Connection error: {err}")
             elif r.ok:
@@ -80,12 +81,13 @@ with tab1:
     with col2:
         st.subheader("Allocation Recommendation")
         if st.button("Generate Recommendation"):
-            r, err = safe_get(
-                f"{api_base}/analytics/recommendation",
-                params={"tickers": ",".join(tickers)},
-                headers=auth_headers,
-                timeout=90,
-            )
+            with st.spinner(f"Running optimizer + ML forecast for {len(tickers)} tickers — may take up to 90 s on first run…"):
+                r, err = safe_get(
+                    f"{api_base}/analytics/recommendation",
+                    params={"tickers": ",".join(tickers)},
+                    headers=auth_headers,
+                    timeout=180,
+                )
             if err:
                 st.error(f"Connection error: {err}")
             elif r.ok:

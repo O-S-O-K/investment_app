@@ -50,7 +50,7 @@ def forecast_expected_returns(tickers: list[str]) -> pd.Series:
     if cached and (monotonic() - cached[0]) < _FORECAST_TTL:
         return cached[1].copy()
 
-    prices = fetch_adjusted_close(tickers=tickers, years=2)
+    prices = fetch_adjusted_close(tickers=tickers, years=2, months=6)
     returns = compute_returns(prices)
 
     # Fit each ticker in parallel threads
