@@ -67,7 +67,7 @@ with tab1:
                 f"{api_base}/analytics/signals",
                 params={"tickers": ",".join(tickers)},
                 headers=auth_headers,
-                timeout=30,
+                timeout=60,
             )
             if err:
                 st.error(f"Connection error: {err}")

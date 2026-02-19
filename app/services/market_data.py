@@ -1,12 +1,22 @@
 from datetime import datetime, timedelta
+from time import monotonic
 
 import pandas as pd
 import yfinance as yf
+
+# Simple in-process TTL cache — avoids re-downloading on back-to-back calls
+_CACHE: dict[tuple, tuple] = {}   # key -> (timestamp, DataFrame)
+_CACHE_TTL_SECONDS = 600          # 10 minutes
 
 
 def fetch_adjusted_close(tickers: list[str], years: int = 5) -> pd.DataFrame:
     if not tickers:
         raise ValueError("At least one ticker is required")
+
+    cache_key = (tuple(sorted(tickers)), years)
+    cached = _CACHE.get(cache_key)
+    if cached and (monotonic() - cached[0]) < _CACHE_TTL_SECONDS:
+        return cached[1].copy()
 
     end = datetime.utcnow().date()
     start = end - timedelta(days=365 * years)
@@ -37,6 +47,7 @@ def fetch_adjusted_close(tickers: list[str], years: int = 5) -> pd.DataFrame:
             prices[t] = float("nan")
 
     prices = prices[tickers].dropna(how="all")
+    _CACHE[cache_key] = (monotonic(), prices.copy())
     return prices
 
 

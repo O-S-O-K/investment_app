@@ -12,7 +12,8 @@ def _normalize(series: pd.Series) -> pd.Series:
 
 
 def compute_tactical_signals(tickers: list[str]) -> pd.DataFrame:
-    prices = fetch_adjusted_close(tickers=tickers, years=3)
+    # 2 years covers MA200 (200 trading days) + 12-month momentum with buffer
+    prices = fetch_adjusted_close(tickers=tickers, years=2)
 
     momentum = prices.iloc[-1] / prices.shift(252).iloc[-1] - 1
     ma_50 = prices.rolling(50).mean().iloc[-1]
