@@ -1,0 +1,9 @@
+ticker,shares,cost_basis,acquired_at,account_type
+VTI,15.000,4125.00,2021-03-10,taxable
+VTI,10.000,3210.00,2022-11-15,taxable
+VXUS,20.000,1980.00,2021-06-01,taxable
+VXUS,12.000,1188.00,2023-02-20,taxable
+BND,25.000,1875.00,2020-08-12,taxable
+GLD,5.000,1050.00,2022-09-05,taxable
+AAPL,8.000,1440.00,2021-01-20,taxable
+MSFT,6.000,1890.00,2020-12-01,taxable

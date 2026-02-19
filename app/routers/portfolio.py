@@ -113,13 +113,15 @@ async def import_holdings_csv(
             cost_basis = float(row["cost_basis"])
             acquired_raw = (row.get("acquired_at") or "").strip()
             acquired_at = datetime.strptime(acquired_raw, "%Y-%m-%d") if acquired_raw else datetime.utcnow()
+            # per-row account_type overrides the query param if column is present
+            row_account_type = (row.get("account_type") or "").strip() or account_type
 
             if shares <= 0 or cost_basis <= 0:
                 raise ValueError("shares and cost_basis must be positive")
 
             holding = Holding(
                 ticker=ticker,
-                account_type=account_type,
+                account_type=row_account_type,
                 shares=shares,
                 cost_basis=cost_basis,
             )
@@ -130,7 +132,7 @@ async def import_holdings_csv(
             lot = TaxLot(
                 holding_id=holding.id,
                 ticker=ticker,
-                account_type=account_type,
+                account_type=row_account_type,
                 acquired_at=acquired_at,
                 shares=shares,
                 cost_basis_per_share=cost_basis / shares,

@@ -27,32 +27,42 @@ This is a personal research tool, not financial advice. Always validate assumpti
 
 ## Quick start
 
-1. Create and activate a virtual environment
-2. Install dependencies
-3. Create your environment file
-4. Run API
-5. Run dashboard
+### One-click startup (recommended)
 
-### Commands (PowerShell)
+First time only:
 
 ```powershell
 cd investment_app
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
-Copy-Item .env.example .env
-uvicorn app.main:app --reload
 ```
 
-In another terminal:
+Every time you want to use the app:
 
 ```powershell
 cd investment_app
-.\.venv\Scripts\Activate.ps1
-streamlit run dashboard/streamlit_app.py
+.\start.ps1
 ```
 
-Dashboard now includes two tabs:
+`start.ps1` automatically:
+- Creates `.env` from `.env.example` on first run
+- Starts the API on port `8000`
+- Starts the Streamlit dashboard on port `8501`
+- Prints your LAN IP so you can open on your phone (same Wi-Fi)
+
+### Manual startup (two terminals)
+
+Terminal 1 — API:
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+Terminal 2 — Dashboard:
+```powershell
+.\.venv\Scripts\python.exe -m streamlit run dashboard/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+```
+
+Dashboard includes two tabs:
 
 - `Signals & Allocation`
 - `Import & Rebalance` (CSV upload + tax-lot rebalance preview)
@@ -89,24 +99,26 @@ Invoke-RestMethod -Headers $headers -Method Get -Uri "http://127.0.0.1:8000/anal
 
 Endpoint: `POST /portfolio/holdings/import-csv`
 
-Required CSV columns:
+Required columns: `ticker`, `shares`, `cost_basis`
 
-- `ticker`
-- `shares`
-- `cost_basis`
+Optional columns:
 
-Optional CSV column:
+- `acquired_at` (format: `YYYY-MM-DD`) — used for short/long-term tax classification
+- `account_type` — `taxable`, `401k`, or `ira` (overrides the UI dropdown if present)
 
-- `acquired_at` (format: `YYYY-MM-DD`)
-
-Example:
+A ready-to-edit sample file is at [samples/holdings_example.csv](samples/holdings_example.csv):
 
 ```csv
-ticker,shares,cost_basis,acquired_at
-VTI,25,5900,2022-01-15
-VXUS,40,2200,2023-06-10
-BND,30,2100,2024-04-03
+ticker,shares,cost_basis,acquired_at,account_type
+VTI,15.000,4125.00,2021-03-10,taxable
+VXUS,20.000,1980.00,2021-06-01,taxable
+BND,25.000,1875.00,2020-08-12,taxable
+GLD,5.000,1050.00,2022-09-05,taxable
 ```
+
+- `cost_basis` = total cost (not per share)
+- Multiple lots for the same ticker = multiple rows
+- 401(k) holdings use `account_type=401k`; they will not be included in taxable rebalance plans
 
 ## Tax-lot rebalancing plan
 

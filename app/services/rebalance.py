@@ -10,7 +10,13 @@ from app.services.market_data import fetch_adjusted_close
 def _latest_prices(tickers: list[str]) -> dict[str, float]:
     prices = fetch_adjusted_close(tickers, years=1)
     last = prices.iloc[-1]
-    return {ticker: float(last[ticker]) for ticker in tickers}
+    result: dict[str, float] = {}
+    for ticker in tickers:
+        val = last.get(ticker) if hasattr(last, "get") else (
+            last[ticker] if ticker in last.index else float("nan")
+        )
+        result[ticker] = float(val) if val is not None and not (val != val) else 0.0
+    return result
 
 
 def _tax_rate_for_lot(acquired_at: datetime, as_of: datetime, short_rate: float, long_rate: float) -> float:
