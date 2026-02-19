@@ -27,8 +27,9 @@ This is a personal research tool, not financial advice. Always validate assumpti
 
 1. Create and activate a virtual environment
 2. Install dependencies
-3. Run API
-4. Run dashboard
+3. Create your environment file
+4. Run API
+5. Run dashboard
 
 ### Commands (PowerShell)
 
@@ -37,6 +38,7 @@ cd investment_app
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -e .
+Copy-Item .env.example .env
 uvicorn app.main:app --reload
 ```
 
@@ -52,6 +54,20 @@ Dashboard now includes two tabs:
 
 - `Signals & Allocation`
 - `Import & Rebalance` (CSV upload + tax-lot rebalance preview)
+
+## API security
+
+All `/portfolio/*` and `/analytics/*` routes require `X-API-Key`.
+
+- Set `API_KEY` in `.env`
+- Use the same key in dashboard sidebar (`X-API-Key` field)
+
+PowerShell example:
+
+```powershell
+$headers = @{ "X-API-Key" = "change-me" }
+Invoke-RestMethod -Headers $headers -Method Get -Uri "http://127.0.0.1:8000/analytics/signals?tickers=SPY,QQQ,AGG"
+```
 
 ## API overview
 

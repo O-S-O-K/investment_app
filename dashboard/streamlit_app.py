@@ -1,9 +1,11 @@
+import os
+
 import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
 
-API_BASE = "http://127.0.0.1:8000"
+DEFAULT_API_BASE = "http://127.0.0.1:8000"
 
 st.set_page_config(page_title="Investment App", layout="wide")
 st.title("Personal Portfolio Intelligence")
@@ -23,10 +25,22 @@ def parse_target_weights(text: str) -> dict[str, float]:
         raise ValueError("At least one ticker:weight pair is required")
     return target_weights
 
+
+def build_auth_headers(api_key: str) -> dict[str, str]:
+    if not api_key.strip():
+        return {}
+    return {"X-API-Key": api_key.strip()}
+
 with st.sidebar:
+    st.header("API")
+    api_base = st.text_input("API Base URL", value=os.getenv("API_BASE", DEFAULT_API_BASE))
+    api_key = st.text_input("X-API-Key", value=os.getenv("API_KEY", "change-me"), type="password")
+
     st.header("Universe")
     tickers_input = st.text_input("Tickers", value="SPY,QQQ,AGG,GLD")
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
+
+auth_headers = build_auth_headers(api_key)
 
 tab1, tab2 = st.tabs(["Signals & Allocation", "Import & Rebalance"])
 
@@ -35,7 +49,12 @@ with tab1:
     with col1:
         st.subheader("Tactical Signals")
         if st.button("Refresh Signals"):
-            r = requests.get(f"{API_BASE}/analytics/signals", params={"tickers": ",".join(tickers)}, timeout=30)
+            r = requests.get(
+                f"{api_base}/analytics/signals",
+                params={"tickers": ",".join(tickers)},
+                headers=auth_headers,
+                timeout=30,
+            )
             if r.ok:
                 signal_df = pd.DataFrame(r.json())
                 st.dataframe(signal_df, use_container_width=True)
@@ -46,8 +65,9 @@ with tab1:
         st.subheader("Allocation Recommendation")
         if st.button("Generate Recommendation"):
             r = requests.get(
-                f"{API_BASE}/analytics/recommendation",
+                f"{api_base}/analytics/recommendation",
                 params={"tickers": ",".join(tickers)},
+                headers=auth_headers,
                 timeout=60,
             )
             if r.ok:
@@ -74,7 +94,13 @@ with tab2:
         else:
             files = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
             params = {"account_type": import_account_type, "broker_source": import_source}
-            r = requests.post(f"{API_BASE}/portfolio/holdings/import-csv", files=files, params=params, timeout=60)
+            r = requests.post(
+                f"{api_base}/portfolio/holdings/import-csv",
+                files=files,
+                params=params,
+                headers=auth_headers,
+                timeout=60,
+            )
             if r.ok:
                 payload = r.json()
                 st.success(
@@ -108,7 +134,12 @@ with tab2:
                 "long_term_tax_rate": long_rate,
                 "min_trade_value": min_trade_value,
             }
-            r = requests.post(f"{API_BASE}/portfolio/rebalance/plan", json=body, timeout=60)
+            r = requests.post(
+                f"{api_base}/portfolio/rebalance/plan",
+                json=body,
+                headers=auth_headers,
+                timeout=60,
+            )
             if r.ok:
                 payload = r.json()
                 st.metric("Portfolio Value", f"${payload['portfolio_value']:,.2f}")

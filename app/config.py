@@ -5,6 +5,7 @@ class Settings(BaseSettings):
     app_name: str = "Investment App"
     environment: str = "dev"
     database_url: str = "sqlite:///./investment_app.db"
+    api_key: str = "change-me"
     risk_free_rate: float = 0.04
     annualization: int = 252
     max_single_weight: float = 0.35
