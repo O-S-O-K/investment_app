@@ -31,6 +31,20 @@ def build_auth_headers(api_key: str) -> dict[str, str]:
         return {}
     return {"X-API-Key": api_key.strip()}
 
+
+def safe_get(url: str, **kwargs):
+    try:
+        return requests.get(url, **kwargs), None
+    except requests.RequestException as exc:
+        return None, str(exc)
+
+
+def safe_post(url: str, **kwargs):
+    try:
+        return requests.post(url, **kwargs), None
+    except requests.RequestException as exc:
+        return None, str(exc)
+
 with st.sidebar:
     st.header("API")
     api_base = st.text_input("API Base URL", value=os.getenv("API_BASE", DEFAULT_API_BASE))
@@ -49,13 +63,15 @@ with tab1:
     with col1:
         st.subheader("Tactical Signals")
         if st.button("Refresh Signals"):
-            r = requests.get(
+            r, err = safe_get(
                 f"{api_base}/analytics/signals",
                 params={"tickers": ",".join(tickers)},
                 headers=auth_headers,
                 timeout=30,
             )
-            if r.ok:
+            if err:
+                st.error(f"Connection error: {err}")
+            elif r.ok:
                 signal_df = pd.DataFrame(r.json())
                 st.dataframe(signal_df, use_container_width=True)
             else:
@@ -64,13 +80,15 @@ with tab1:
     with col2:
         st.subheader("Allocation Recommendation")
         if st.button("Generate Recommendation"):
-            r = requests.get(
+            r, err = safe_get(
                 f"{api_base}/analytics/recommendation",
                 params={"tickers": ",".join(tickers)},
                 headers=auth_headers,
                 timeout=60,
             )
-            if r.ok:
+            if err:
+                st.error(f"Connection error: {err}")
+            elif r.ok:
                 payload = r.json()
                 alloc_df = pd.DataFrame(payload["allocations"])
                 st.metric("Expected Return", f"{payload['expected_return']:.2%}")
@@ -94,14 +112,16 @@ with tab2:
         else:
             files = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
             params = {"account_type": import_account_type, "broker_source": import_source}
-            r = requests.post(
+            r, err = safe_post(
                 f"{api_base}/portfolio/holdings/import-csv",
                 files=files,
                 params=params,
                 headers=auth_headers,
                 timeout=60,
             )
-            if r.ok:
+            if err:
+                st.error(f"Connection error: {err}")
+            elif r.ok:
                 payload = r.json()
                 st.success(
                     f"Imported {payload['created_holdings']} holdings and {payload['created_lots']} lots. "
@@ -134,13 +154,15 @@ with tab2:
                 "long_term_tax_rate": long_rate,
                 "min_trade_value": min_trade_value,
             }
-            r = requests.post(
+            r, err = safe_post(
                 f"{api_base}/portfolio/rebalance/plan",
                 json=body,
                 headers=auth_headers,
                 timeout=60,
             )
-            if r.ok:
+            if err:
+                st.error(f"Connection error: {err}")
+            elif r.ok:
                 payload = r.json()
                 st.metric("Portfolio Value", f"${payload['portfolio_value']:,.2f}")
                 st.metric("Estimated Tax Impact", f"${payload['estimated_total_tax_impact']:,.2f}")
