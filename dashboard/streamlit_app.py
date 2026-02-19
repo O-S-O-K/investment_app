@@ -122,36 +122,62 @@ with st.sidebar:
     # Model Parameters  (IPS / optimizer overrides)
     # ------------------------------------------------------------------
     with st.expander("Model Parameters", expanded=False):
-        st.caption("Override optimizer defaults — leave blank to use server settings.")
+        st.markdown(
+            "These controls shape how the portfolio optimizer builds its recommendation. "
+            "They act like guardrails or preferences you set in advance — the optimizer then "
+            "finds the best portfolio **within** those constraints."
+        )
+        st.divider()
 
         mp_max_weight = st.slider(
-            "Max Weight per Ticker (%)", min_value=5, max_value=100, value=60, step=5
+            "Max Weight per Ticker (%)", min_value=5, max_value=100, value=60, step=5,
+            help="The largest slice any single ticker can occupy. Lower this if you want "
+                 "to avoid concentration risk — e.g. 25% means no single holding can be more "
+                 "than a quarter of the portfolio.",
         ) / 100.0
 
         mp_min_weight = st.slider(
-            "Min Weight per Ticker (%)", min_value=0, max_value=20, value=0, step=1
+            "Min Weight per Ticker (%)", min_value=0, max_value=20, value=0, step=1,
+            help="The smallest slice any selected ticker must hold. Setting this above 0 forces "
+                 "a meaningful position in every included ticker rather than near-zero token weights.",
         ) / 100.0
 
         mp_rfr = st.slider(
-            "Risk-Free Rate (%)", min_value=0.0, max_value=10.0, value=4.5, step=0.25
+            "Risk-Free Rate (%)", min_value=0.0, max_value=10.0, value=4.5, step=0.25,
+            help="The return you can earn risk-free (e.g. a T-bill or money-market rate today). "
+                 "The optimizer uses this to calculate the Sharpe ratio — a higher risk-free rate "
+                 "raises the bar a risky portfolio must clear to look attractive.",
         ) / 100.0
 
         mp_vol_target = st.slider(
-            "Target Volatility (%)", min_value=5, max_value=30, value=12, step=1
+            "Target Volatility (%)", min_value=5, max_value=30, value=12, step=1,
+            help="The maximum annual volatility you're comfortable with. 10–12% is similar to a "
+                 "60/40 stock-bond portfolio. 20%+ is equity-like. The optimizer will blend in "
+                 "bonds/defensive assets to stay below this level.",
         ) / 100.0
 
         mp_mu_blend = st.slider(
-            "Hist Return Blend (0=ML, 1=Historical)", min_value=0.0, max_value=1.0,
-            value=0.6, step=0.05,
+            "Return Forecast Blend", min_value=0.0, max_value=1.0, value=0.6, step=0.05,
+            help="Controls how expected returns are estimated. At 0 the optimizer relies "
+                 "entirely on the machine-learning return forecast; at 1 it uses only the "
+                 "historical average return. Values in between blend both. 0.6 works well "
+                 "for most situations.",
         )
+        st.caption(f"{'📈 More historical' if mp_mu_blend > 0.5 else ('🤖 More ML' if mp_mu_blend < 0.5 else '⚖️ Balanced')} (blend = {mp_mu_blend:.2f})")
 
         mp_taa_tilt = st.slider(
-            "TAA Tilt Strength (%)", min_value=0, max_value=30, value=10, step=1
+            "TAA Tilt Strength (%)", min_value=0, max_value=30, value=10, step=1,
+            help="How aggressively the tactical overlay nudges weights based on short-term "
+                 "momentum and trend signals. At 0% the output is purely strategic (long-run "
+                 "optimal). At 20–30% recent market momentum significantly influences which "
+                 "tickers get overweighted.",
         ) / 100.0
 
         mp_prohibited_raw = st.text_input(
-            "Prohibited Tickers (comma-separated)", value="",
-            help="IPS exclusion list — these tickers will never appear in the output.",
+            "Excluded Tickers (comma-separated)", value="",
+            help="Any tickers listed here will never appear in the recommendation — useful if "
+                 "you already hold a position elsewhere, have a personal restriction, or want "
+                 "to model a portfolio without a specific ETF.",
         )
 
     # ------------------------------------------------------------------
@@ -277,11 +303,23 @@ with tab1:
 
     with imp_col:
         st.subheader("Broker CSV Import")
+        st.caption(
+            "Download your holdings export from your broker and upload it here. "
+            "The app reads each position and tax lot so it can later calculate "
+            "tax-efficient trade plans."
+        )
         uploaded = st.file_uploader("Upload holdings CSV", type=["csv"])
         import_account_type = st.selectbox(
-            "Account Type", options=["taxable", "401k", "ira"], index=0
+            "Account Type", options=["taxable", "401k", "ira"], index=0,
+            help="Taxable accounts have real capital-gains consequences when you sell. "
+                 "401k and IRA accounts are tax-deferred — they are tracked separately and "
+                 "excluded from taxable rebalance plans so the app doesn't suggest taxable sells.",
         )
-        import_source = st.text_input("Broker Source Label", value="csv-import")
+        import_source = st.text_input(
+            "Broker Source Label", value="csv-import",
+            help="A label to identify where these holdings came from (e.g. 'fidelity-brokerage'). "
+                 "Useful if you have accounts at multiple brokers.",
+        )
 
         if st.button("Import CSV", use_container_width=True):
             if uploaded is None:
@@ -322,6 +360,29 @@ with tab1:
     with sig_col:
         st.subheader("Tactical Signals")
         st.caption(f"Universe: {', '.join(tickers)}")
+        with st.expander("What do these signals mean?", expanded=False):
+            st.markdown(
+                """
+**Momentum** measures whether a ticker has been trending up or down over the past year
+(excluding the most recent month to avoid short-term mean-reversion noise).
+Positive = recent upward trend; negative = recent downward trend.
+
+**Trend Strength** measures whether the price is above or below its own moving average.
+A high value means the current price is well above its recent average — a sign of
+established upward momentum. Near zero means the price is hugging its average.
+
+**Tactical Score** combines both signals into a single number used to tilt the
+allocation recommendation. Higher score = the optimizer gives this ticker a slightly
+larger weight than the pure strategic model would suggest.
+
+**Signal** (BUY / HOLD / SELL) is a simplified summary:
+- 🟢 **BUY** — both momentum and trend are positive: the ticker is in an uptrend
+- 🟡 **HOLD** — mixed or neutral signals
+- 🔴 **SELL** — both signals are negative: the ticker is in a downtrend
+
+*Signals reflect recent price behaviour only — they are not a guarantee of future returns.*
+"""
+            )
 
         if st.button("Refresh Signals", use_container_width=True):
             r, err = safe_post(
@@ -370,6 +431,28 @@ with tab2:
     with rec_col:
         st.subheader("Allocation Recommendation")
         st.caption(f"Universe: {', '.join(tickers)}  ·  parameters from Model Parameters sidebar")
+        with st.expander("How the recommendation is built", expanded=False):
+            st.markdown(
+                """
+The recommendation runs a **three-layer pipeline**:
+
+1. **Strategic Allocation (SAA)** — finds the portfolio weights that maximise the
+   Sharpe ratio (return per unit of risk) subject to your max/min weight and volatility
+   constraints set in the sidebar. This is the long-run "anchor" allocation.
+
+2. **Tactical Overlay (TAA)** — tilts the strategic weights up or down based on the
+   momentum and trend signals from the Signals tab. Tickers with strong recent momentum
+   get a slightly larger slice; weak ones get trimmed. Tilt Strength in the sidebar
+   controls how aggressively this happens.
+
+3. **ML Return Forecast** — a Random Forest model trained on each ticker's own price
+   history provides a forward-looking return estimate. The Return Blend slider in the
+   sidebar controls how much weight this forecast carries versus the historical average.
+
+The result is a single set of portfolio weights that reflect both your long-run risk
+preferences and current market conditions.
+"""
+            )
 
         if st.button("Generate Recommendation", use_container_width=True):
             params = {"tickers": ",".join(tickers), **_model_params}
@@ -400,10 +483,19 @@ with tab2:
             vol = payload.get("expected_volatility")
             cvar = payload.get("expected_cvar_95")
             sharpe = payload.get("sharpe_ratio")
-            m1.metric("Exp Return", f"{ret:.2%}" if ret is not None else "N/A")
-            m2.metric("Exp Volatility", f"{vol:.2%}" if vol is not None else "N/A")
-            m3.metric("CVaR 95%", f"{cvar:.2%}" if cvar is not None else "N/A")
-            m4.metric("Sharpe", f"{sharpe:.2f}" if sharpe is not None else "N/A")
+            m1.metric("Exp Return", f"{ret:.2%}" if ret is not None else "N/A",
+                      help="Estimated annualised return based on the blended historical + ML forecast.")
+            m2.metric("Exp Volatility", f"{vol:.2%}" if vol is not None else "N/A",
+                      help="Estimated annual standard deviation of returns — a measure of how much the "
+                           "portfolio value could fluctuate. A 60/40 portfolio is typically ~10–12%.")
+            m3.metric("CVaR 95%", f"{cvar:.2%}" if cvar is not None else "N/A",
+                      help="Conditional Value at Risk: the average loss you'd expect in the worst 5% of "
+                           "years based on historical data. E.g. -18% means in bad years you could expect "
+                           "to lose roughly 18% on average. Lower magnitude is better.")
+            m4.metric("Sharpe", f"{sharpe:.2f}" if sharpe is not None else "N/A",
+                      help="Return earned per unit of risk taken, above the risk-free rate. "
+                           "Above 1.0 is considered good; above 2.0 is excellent. "
+                           "Negative means the portfolio doesn't compensate for its risk.")
 
             fig = px.pie(
                 alloc_df,
@@ -421,11 +513,17 @@ with tab2:
             st.dataframe(alloc_df[display_cols], use_container_width=True)
 
             if "risk_contribution" in alloc_df.columns:
+                st.caption(
+                    "**Marginal Risk Contribution** shows which holdings are actually driving "
+                    "portfolio risk. A ticker can have a large weight but low risk contribution "
+                    "(e.g. bonds) — or a small weight but high contribution (e.g. a volatile stock). "
+                    "Ideally you want risk spread across many holdings rather than dominated by one."
+                )
                 fig_mrc = px.bar(
                     alloc_df.sort_values("risk_contribution", ascending=False),
                     x="ticker", y="risk_contribution",
-                    title="Marginal Risk Contribution",
-                    labels={"risk_contribution": "Fraction of Portfolio Variance"},
+                    title="Marginal Risk Contribution — which tickers drive your portfolio risk",
+                    labels={"risk_contribution": "Share of Total Portfolio Variance"},
                     color="ticker",
                 )
                 st.plotly_chart(fig_mrc, use_container_width=True)
@@ -439,6 +537,21 @@ with tab2:
 
     with reb_col:
         st.subheader("Tax-Lot Rebalance Plan")
+        with st.expander("How the rebalance planner works", expanded=False):
+            st.markdown(
+                """
+The planner compares your **current** holdings (imported from your broker CSV) against
+your **target** weights and generates a minimal set of BUY and SELL orders to close the gap.
+
+When selling, it prioritises lots in this order to minimise tax drag:
+1. **Loss lots first** — sell positions at a loss to generate harvestable tax losses (no tax due)
+2. **Long-term gain lots** — held > 1 year, taxed at the lower long-term capital gains rate
+3. **Short-term gain lots** — held < 1 year, taxed as ordinary income (highest tax)
+
+Set your actual marginal tax rates below so the estimated tax impact is accurate for your
+situation. The minimum trade filter suppresses tiny orders that aren't worth the friction.
+"""
+            )
         _default_weights = (
             st.session_state.prefill_weights
             if st.session_state.prefill_weights
@@ -447,12 +560,27 @@ with tab2:
         targets_text = st.text_area(
             "Target Weights (TICKER:WEIGHT, comma-separated)",
             value=_default_weights, height=120,
-            help="Auto-filled from Recommendation or enter manually.",
+            help="Enter your desired portfolio as TICKER:WEIGHT pairs. Weights should sum to 1.0 "
+                 "(or close to it). Press 'Copy Weights to Rebalance' on the left to auto-fill "
+                 "from the latest recommendation.",
         )
         c1, c2, c3 = st.columns(3)
-        short_rate = c1.number_input("Short-Term Tax Rate", 0.0, 1.0, 0.37, 0.01)
-        long_rate = c2.number_input("Long-Term Tax Rate", 0.0, 1.0, 0.20, 0.01)
-        min_trade_value = c3.number_input("Min Trade ($)", 0.0, value=50.0, step=10.0)
+        short_rate = c1.number_input(
+            "Short-Term Tax Rate", 0.0, 1.0, 0.37, 0.01,
+            help="Your marginal income tax rate, applied to gains on positions held less than 1 year. "
+                 "For most people this is in the 22–37% range.",
+        )
+        long_rate = c2.number_input(
+            "Long-Term Tax Rate", 0.0, 1.0, 0.20, 0.01,
+            help="Your capital gains rate for positions held more than 1 year. "
+                 "Most people pay 15% or 20% depending on income.",
+        )
+        min_trade_value = c3.number_input(
+            "Min Trade ($)", 0.0, value=50.0, step=10.0,
+            help="Skip any BUY or SELL order smaller than this amount. Raise it to suppress "
+                 "nuisance trades on small positions (commissions and bid/ask spreads may "
+                 "erode the benefit of tiny rebalancing moves).",
+        )
 
         if st.button("Generate Rebalance Plan", use_container_width=True):
             try:
@@ -502,7 +630,23 @@ with tab3:
 
     with drift_col:
         st.subheader("Portfolio Drift Monitor")
-        st.caption("Measures how much current holdings have drifted from your target.")
+        with st.expander("What is drift and why does it matter?", expanded=False):
+            st.markdown(
+                """
+Over time, your portfolio drifts away from its target allocation because different assets
+grow at different rates. A stock that was 20% of your portfolio might become 30% after a
+big rally — meaning you now have more risk than you intended.
+
+**Drift** here is the difference between each ticker's current weight and its target weight.
+For example, if VTI is supposed to be 60% but is now 68%, the drift is +8 percentage points.
+
+**Alert Threshold** sets the trigger level. A common rule of thumb is 5% — if any position
+has drifted more than 5 percentage points from target, the rebalance planner should be run.
+
+Highlighted rows (amber) indicate positions that have crossed the threshold and should be
+reviewed. Use the **Rebalance Plan** in the Allocation tab to generate the corrective trades.
+"""
+            )
 
         _default_drift_weights = (
             st.session_state.prefill_weights
@@ -572,6 +716,27 @@ with tab3:
 
     with dd_col:
         st.subheader("Drawdown & High-Water Mark")
+        with st.expander("What is a drawdown?", expanded=False):
+            st.markdown(
+                """
+A **drawdown** measures how far your portfolio has fallen from its peak value.
+
+For example, if your portfolio was worth $120,000 at its best and is now $102,000,
+you are in a 15% drawdown.
+
+The **High-Water Mark (HWM)** is the highest value your portfolio has ever reached.
+It is widely used in professional fund management — many managers track it as a
+personal benchmark and do not take performance fees until the HWM is exceeded again.
+
+Why track it?
+- It keeps you grounded: a 20% gain after a 20% loss still leaves you in a hole
+- It helps you assess whether a bad stretch is normal volatility or something to act on
+- A prolonged drawdown (e.g. > 20% for > 6 months) might signal a need to review strategy
+
+**To use this feature:** periodically save a snapshot of your total portfolio value using
+the form below. The chart will build up over time showing your full drawdown history.
+"""
+            )
 
         with st.expander("Record Snapshot", expanded=False):
             snap_val = st.number_input(
@@ -655,9 +820,37 @@ with tab3:
 # ===========================================================================
 with tab4:
     st.subheader("Tax-Loss Harvest Scanner")
-    st.caption("Scans all taxable lots for unrealised losses above your threshold.")
+    with st.expander("What is tax-loss harvesting?", expanded=True):
+        st.markdown(
+            """
+Tax-loss harvesting is the practice of **selling investments that are currently at a loss**
+to generate a capital loss that offsets capital gains elsewhere in your portfolio — reducing
+your tax bill.
 
-    min_loss = st.slider("Min Unrealised Loss ($)", 0, 10000, 100, 50)
+**Example:** You hold SPY bought at $450, now worth $400 — an unrealised loss of $50/share.
+If you sell it and immediately buy a similar (but not identical) ETF like IVV, you:
+- Lock in the loss for tax purposes (saving real money at tax time)
+- Stay essentially fully invested in the broad market
+- Avoid the wash-sale rule (see below)
+
+**The wash-sale rule (US):** The IRS disallows the tax loss if you buy a "substantially
+identical" security within 30 days before or after the sale. The scanner flags lots where
+you've recently traded the same ticker — these are shown in **red** and should be avoided
+or delayed.
+
+**How to use this tool:**
+1. Set the minimum unrealised loss you care about (ignores tiny losses not worth the effort)
+2. Click Scan — it checks every tax lot in your taxable accounts
+3. Review green rows (safe to harvest) and red rows (wash-sale risk)
+4. For each green opportunity, execute the sell in your broker, then buy a comparable alternative
+"""
+        )
+
+    min_loss = st.slider(
+        "Min Unrealised Loss ($)", 0, 10000, 100, 50,
+        help="Only show lots with an unrealised loss larger than this dollar amount. "
+             "Raise it to filter out small losses that wouldn't meaningfully reduce your tax bill.",
+    )
     if st.button("Scan for Opportunities", use_container_width=True):
         r, err = safe_post(
             f"{api_base}/analytics/harvest/start",
@@ -724,6 +917,11 @@ with tab4:
 # ===========================================================================
 with tab5:
     st.subheader("Portfolio Analytics")
+    st.caption(
+        "Three advanced lenses for understanding your portfolio: "
+        "*attribution* explains past performance, *scenarios* stress-tests against historical crises, "
+        "and *factor exposure* reveals the underlying drivers of your returns."
+    )
 
     _default_analytics_weights = (
         st.session_state.prefill_weights
@@ -743,11 +941,32 @@ with tab5:
     ])
 
     with attr_tab:
+        st.markdown(
+            "**Performance Attribution** answers the question: *why* did my portfolio perform "
+            "differently from the benchmark?\n\n"
+            "It uses the classic **Brinson-Hood-Beebower** framework, which breaks the active "
+            "return (your return minus the benchmark's return) into two effects:\n\n"
+            "- **Selection Effect** — did you pick the *right assets within* each category? "
+            "(Positive = your chosen ETFs outperformed the benchmark's equivalent exposure)\n"
+            "- **Interaction Effect** — did you hold *more* of the assets that did better? "
+            "(Positive = your overweights were concentrated in the best performers)\n\n"
+            "A positive active return driven by selection tells you the portfolio construction "
+            "added value. A negative active return means the benchmark beat you — worth investigating."
+        )
+        st.divider()
         a1, a2 = st.columns([1, 1], gap="large")
         with a1:
-            benchmark_ticker = st.text_input("Benchmark Ticker", value="SPY")
+            benchmark_ticker = st.text_input(
+                "Benchmark Ticker", value="SPY",
+                help="The index you want to compare against. SPY (S&P 500) is standard for US equity "
+                     "portfolios. Use AGG for bond-heavy portfolios, AOR for a 60/40 blended benchmark.",
+            )
             lookback_days = st.select_slider(
-                "Lookback (trading days)", options=[21, 42, 63, 126, 252], value=63,
+                "Lookback (trading days)",
+                options=[21, 42, 63, 126, 252], value=63,
+                help="How many trading days of history to use. 21 ≈ 1 month, 63 ≈ 1 quarter, "
+                     "252 ≈ 1 year. Shorter windows reflect recent performance; longer windows "
+                     "smooth out noise but may mix different market regimes.",
             )
             if st.button("Run Attribution", use_container_width=True):
                 r, err = safe_post(
@@ -797,6 +1016,25 @@ with tab5:
                 st.plotly_chart(fig_attr, use_container_width=True)
 
     with scen_tab:
+        st.markdown(
+            "**Scenario Stress Testing** asks: *how would my portfolio have fared during past "
+            "market crises?* Each scenario applies the estimated shocks from a historical event "
+            "to your current holdings.\n\n"
+            "| Scenario | What happened |"
+            "\n|---|---|"
+            "\n| 2008 GFC | Global financial crisis — equities fell ~50%, credit froze |"
+            "\n| 2020 COVID | Rapid -34% equity crash in March 2020 |"
+            "\n| 2022 Rate Shock | Fed raised rates aggressively — bonds fell hard |"
+            "\n| 2013 Taper | 'Taper tantrum' — rates spiked on Fed tapering signal |"
+            "\n| Equity Bear -30% | Generic severe equity bear market |"
+            "\n| Rising Rates +200bp | Interest rates rise 2 percentage points — hurts bonds |"
+            "\n| Inflation Spike | Inflation surges — hurts nominal bonds and growth stocks |\n\n"
+            "**How to read the results:** The projected return is an estimate of what your "
+            "current allocation would have lost (or gained) in each scenario. Expand any row "
+            "to see which tickers drive the result. Use this to check whether your portfolio "
+            "has an uncomfortable concentration in a specific risk (e.g. highly rate-sensitive)."
+        )
+        st.divider()
         if st.button("Run Stress Tests", use_container_width=True):
             r, err = safe_post(
                 f"{api_base}/analytics/scenarios/start",
@@ -841,8 +1079,33 @@ with tab5:
                         st.dataframe(pd.DataFrame(s.get("detail", [])), use_container_width=True)
 
     with fact_tab:
+        st.markdown(
+            "**Factor Exposure** reveals *why* your portfolio moves the way it does by "
+            "comparing it to five well-known return drivers — called factors:\n\n"
+            "| Factor | Proxy ETF | What it captures |"
+            "\n|---|---|---|"
+            "\n| Market | SPY | Overall stock market risk — the biggest driver for most portfolios |"
+            "\n| Size | IWM | Small-cap premium — small stocks tend to outperform long-term |"
+            "\n| Value | VTV | Value premium — cheap stocks vs expensive growth stocks |"
+            "\n| Momentum | MTUM | Recent winners continuing to outperform |"
+            "\n| Low Volatility | USMV | Defensive/low-risk stocks |"
+            "\n\n"
+            "**Beta** measures how much your portfolio moves for a 1-unit move in that factor. "
+            "A Market beta of 0.8 means your portfolio typically rises/falls 0.8% when the "
+            "S&P 500 rises/falls 1%. A negative Value beta means you're tilted towards growth "
+            "rather than value stocks.\n\n"
+            "**Alpha** is the return not explained by any of the five factors — i.e. the "
+            "unique return from your specific selection. Positive alpha suggests genuine "
+            "outperformance beyond what factor exposures would predict.\n\n"
+            "**R²** shows what fraction of your portfolio's daily movements are explained by "
+            "these five factors. An R² of 0.90 means the factors explain 90% of your returns "
+            "— leaving little room for alpha."
+        )
+        st.divider()
         fact_lookback = st.select_slider(
-            "Lookback (trading days)", options=[60, 126, 252, 504], value=252, key="fact_lb"
+            "Lookback (trading days)", options=[60, 126, 252, 504], value=252, key="fact_lb",
+            help="More trading days gives a more stable estimate but may mix different "
+                 "market regimes. 252 days (1 year) is the standard for most factor analyses.",
         )
         if st.button("Compute Factor Exposure", use_container_width=True):
             r, err = safe_post(
@@ -896,19 +1159,57 @@ with tab5:
 # ===========================================================================
 with tab6:
     st.subheader("Investment Decision Journal")
+    with st.expander("Why keep an investment journal?", expanded=False):
+        st.markdown(
+            """
+One of the most consistent findings in behavioural finance is that investors
+**overestimate how rational their past decisions were** once the outcome is known.
+Keeping a written record of your reasoning *before* you know the result corrects this.
+
+Log an entry any time you make a deliberate investment decision — a new buy, a planned
+sell, or a conscious decision to hold despite bad news. Record:
+
+- **Ticker + Action** — what you are doing
+- **Rationale** — why, in your own words ("earnings revisions turning positive",
+  "long-term inflation hedge", "reducing sector concentration")
+- **Expected Return** — your rough estimate of the upside
+- **Expected Holding Period** — how long you plan to own it
+
+Later, use **Record Outcome** to note what actually happened and close the entry.
+Over time you'll build a personal track record that shows you which types of
+decisions you make well — and which you don't. Most investors find this humbling
+but genuinely useful.
+"""
+        )
     jnl_create_col, jnl_list_col = st.columns([1, 2], gap="large")
 
     with jnl_create_col:
         st.subheader("New Entry")
         with st.form("journal_form", clear_on_submit=True):
-            j_ticker = st.text_input("Ticker", value="").upper()
-            j_action = st.selectbox("Action", ["BUY", "SELL", "HOLD", "AVOID"])
-            j_rationale = st.text_area("Rationale / Thesis", height=120)
+            j_ticker = st.text_input(
+                "Ticker", value="",
+                help="The ticker symbol you are making a decision about (e.g. AAPL, VTI, GLD).",
+            ).upper()
+            j_action = st.selectbox(
+                "Action", ["BUY", "SELL", "HOLD", "AVOID"],
+                help="BUY = initiating or adding; SELL = reducing or exiting; "
+                     "HOLD = consciously deciding not to trade; AVOID = ruling out a position.",
+            )
+            j_rationale = st.text_area(
+                "Rationale / Thesis", height=120,
+                placeholder="e.g. 'Adding to AGG as a recession hedge — yield attractive at 5.2%, "
+                             "Fed likely at peak rates. Plan to hold 2 years.'",
+                help="Write why you are making this decision in plain language. "
+                     "This is for your future self — be specific.",
+            )
             j_exp_ret = st.number_input(
-                "Expected Return (%)", min_value=-50.0, max_value=200.0, value=0.0, step=0.5
+                "Expected Return (%)", min_value=-50.0, max_value=200.0, value=0.0, step=0.5,
+                help="Your rough expected total return over the holding period. "
+                     "e.g. 12 for '12% gain'. Negative for a short/hedge thesis.",
             )
             j_exp_days = st.number_input(
-                "Expected Holding (days)", min_value=1, max_value=3650, value=252
+                "Expected Holding (days)", min_value=1, max_value=3650, value=252,
+                help="How long you plan to hold this position. 252 ≈ 1 year, 63 ≈ 1 quarter.",
             )
             submitted = st.form_submit_button(
                 "Log Entry", use_container_width=True, type="primary"
