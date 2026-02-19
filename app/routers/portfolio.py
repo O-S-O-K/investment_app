@@ -78,6 +78,49 @@ def list_401k_allocation(db: Session = Depends(get_db)):
     return db.query(FourOhOneKAllocation).order_by(FourOhOneKAllocation.as_of.desc()).all()
 
 
+
+# ---------------------------------------------------------------------------
+# Broker column-name aliases   (lower-cased, stripped for matching)
+# ---------------------------------------------------------------------------
+_COL_TICKER = ["ticker", "symbol", "security"]
+_COL_SHARES = ["shares", "quantity", "qty", "number of shares", "share quantity"]
+# Total cost basis (preferred)
+_COL_CB_TOTAL = ["cost_basis", "cost basis total", "cost basis", "total cost basis",
+                 "total cost", "basis"]
+# Per-share cost basis (fallback – multiplied by shares to get total)
+_COL_CB_PER_SHARE = ["average cost basis", "avg cost basis", "cost basis/share",
+                     "unit cost"]
+_COL_ACQUIRED = ["acquired_at", "acquired date", "date acquired",
+                 "acquisition date", "trade date", "open date"]
+_COL_ACCOUNT  = ["account_type", "account type", "acct type"]
+
+
+def _clean_num(val: str) -> float:
+    """Strip $, commas, spaces and cast to float. Raises ValueError if empty/dash."""
+    cleaned = val.strip().replace("$", "").replace(",", "").replace(" ", "")
+    if cleaned in ("", "--", "N/A", "n/a"):
+        raise ValueError(f"no numeric value: {val!r}")
+    return float(cleaned)
+
+
+def _map_col(fieldnames: list[str], aliases: list[str]) -> str | None:
+    """Return the first fieldname that matches any alias (case-insensitive)."""
+    lower_fields = {f.strip().lower(): f for f in fieldnames}
+    for alias in aliases:
+        if alias.lower() in lower_fields:
+            return lower_fields[alias.lower()]
+    return None
+
+
+def _find_header_line(lines: list[str]) -> int:
+    """Scan for the first line that looks like a real CSV header (has 'symbol' or 'ticker')."""
+    for i, line in enumerate(lines):
+        lower = line.lower()
+        if "symbol" in lower or "ticker" in lower:
+            return i
+    return 0
+
+
 @router.post("/holdings/import-csv", response_model=ImportCSVResponse)
 async def import_holdings_csv(
     file: UploadFile = File(...),
@@ -90,13 +133,38 @@ async def import_holdings_csv(
 
     raw = await file.read()
     decoded = raw.decode("utf-8-sig")
-    reader = csv.DictReader(decoded.splitlines())
+    lines = decoded.splitlines()
 
-    required_columns = {"ticker", "shares", "cost_basis"}
-    if not reader.fieldnames or not required_columns.issubset({col.strip() for col in reader.fieldnames}):
+    # Skip any broker preamble rows (Fidelity adds account/date headers above data)
+    header_idx = _find_header_line(lines)
+    reader = csv.DictReader(lines[header_idx:])
+
+    if not reader.fieldnames:
+        raise HTTPException(status_code=400, detail="Could not parse CSV — no header row found.")
+
+    fields: list[str] = list(reader.fieldnames)
+
+    # Map column aliases → actual column names in this file
+    col_ticker   = _map_col(fields, _COL_TICKER)
+    col_shares   = _map_col(fields, _COL_SHARES)
+    col_cb_total = _map_col(fields, _COL_CB_TOTAL)
+    col_cb_ps    = _map_col(fields, _COL_CB_PER_SHARE)
+    col_acquired = _map_col(fields, _COL_ACQUIRED)
+    col_account  = _map_col(fields, _COL_ACCOUNT)
+
+    missing = []
+    if not col_ticker: missing.append("ticker/symbol")
+    if not col_shares: missing.append("shares/quantity")
+    if not col_cb_total and not col_cb_ps: missing.append("cost basis")
+    if missing:
         raise HTTPException(
             status_code=400,
-            detail="CSV must include columns: ticker, shares, cost_basis. Optional: acquired_at (YYYY-MM-DD).",
+            detail=(
+                f"Cannot find required columns: {', '.join(missing)}. "
+                f"Detected columns: {', '.join(fields[:15])}. "
+                "Supported brokers: Fidelity, Schwab, Vanguard, or any CSV with "
+                "ticker/symbol, shares/quantity, and a cost basis column."
+            ),
         )
 
     imported_rows = 0
@@ -108,13 +176,41 @@ async def import_holdings_csv(
     for idx, row in enumerate(reader, start=2):
         imported_rows += 1
         try:
-            ticker = row["ticker"].strip().upper()
-            shares = float(row["shares"])
-            cost_basis = float(row["cost_basis"])
-            acquired_raw = (row.get("acquired_at") or "").strip()
-            acquired_at = datetime.strptime(acquired_raw, "%Y-%m-%d") if acquired_raw else datetime.utcnow()
-            # per-row account_type overrides the query param if column is present
-            row_account_type = (row.get("account_type") or "").strip() or account_type
+            ticker = (row.get(col_ticker) or "").strip().upper()
+
+            # Skip blank tickers, cash sweep funds (SPAXX**), summary rows
+            if not ticker or ticker.startswith("--") or ticker.upper() in ("TOTAL", "TOTALS"):
+                skipped_rows += 1
+                imported_rows -= 1
+                continue
+            if ticker.endswith("**") or "PENDING" in ticker.upper():
+                skipped_rows += 1
+                imported_rows -= 1
+                continue
+
+            shares = _clean_num(row.get(col_shares) or "")
+
+            # Cost basis: prefer total column, fall back to per-share × shares
+            if col_cb_total:
+                cost_basis = _clean_num(row.get(col_cb_total) or "")
+            else:
+                cb_ps = _clean_num(row.get(col_cb_ps) or "")
+                cost_basis = cb_ps * shares
+
+            acquired_raw = (row.get(col_acquired) if col_acquired else None) or ""
+            acquired_raw = acquired_raw.strip()
+            acquired_at = datetime.utcnow()
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+                try:
+                    acquired_at = datetime.strptime(acquired_raw, fmt)
+                    break
+                except ValueError:
+                    pass
+
+            row_account_type = (
+                (row.get(col_account).strip() if col_account and row.get(col_account) else "")
+                or account_type
+            )
 
             if shares <= 0 or cost_basis <= 0:
                 raise ValueError("shares and cost_basis must be positive")
