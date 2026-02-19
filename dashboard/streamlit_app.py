@@ -70,6 +70,124 @@ with st.sidebar:
     tickers_input = st.text_input("Tickers", value="SPY,QQQ,AGG,GLD")
     tickers = [t.strip().upper() for t in tickers_input.split(",") if t.strip()]
 
+    st.divider()
+
+    # ------------------------------------------------------------------
+    # About
+    # ------------------------------------------------------------------
+    with st.expander("About this app", expanded=False):
+        st.markdown(
+            """
+**Personal Portfolio Intelligence** is a local-first portfolio management tool.
+It connects to a FastAPI backend that stores your holdings, fetches live market
+data, and runs a combined strategic + tactical + machine-learning analytics
+pipeline — all on your own machine with no third-party cloud dependency.
+
+---
+
+**What you can do**
+
+| Action | Where |
+|---|---|
+| Import your holdings from a broker CSV | Import & Signals → left panel |
+| View per-ticker tactical signals (BUY / HOLD / SELL) | Import & Signals → right panel |
+| Generate an optimised allocation recommendation | Allocation & Rebalance → left panel |
+| Copy recommended weights directly into the rebalancer | *Copy Weights to Rebalance →* button |
+| Run a tax-lot-aware trade plan | Allocation & Rebalance → right panel |
+
+---
+
+**How to manipulate it**
+
+- **Ticker universe** — add or remove any Yahoo Finance–supported tickers in the
+  *Universe* field above. The signals and recommendation will re-run against
+  that exact set.
+- **API key** — must match the `API_KEY` value in your `.env` file for all
+  requests to succeed.
+- **Tax rates** — adjust short-term and long-term rates in the rebalance panel
+  to model your actual marginal rates.
+- **Min trade value** — raise this threshold to suppress small nuisance trades.
+- **Target weights** — you can override the auto-filled weights from the
+  recommendation with any manual allocation before running the rebalance plan.
+- **Account type** — choose *taxable*, *401k*, or *ira* when importing CSV
+  lots; 401k and IRA lots are excluded from taxable rebalance plans.
+
+---
+
+*This is a personal research tool, not financial advice.*
+"""
+        )
+
+    # ------------------------------------------------------------------
+    # Architecture
+    # ------------------------------------------------------------------
+    with st.expander("Architecture & workflow", expanded=False):
+        st.markdown(
+            """
+**System layers**
+
+```
+Browser (Streamlit)
+    │  HTTP polling every 3 s
+    ▼
+FastAPI  (localhost:8000)
+    │  async job queue (job_store.py)
+    │  background thread per request
+    ▼
+Analytics pipeline
+    ├── market_data.py   ← yf.Ticker.history(), parallel threads, 10-min cache
+    ├── signals.py       ← trend (MA cross) + momentum (12-1) per ticker
+    ├── forecast.py      ← RandomForest 50 trees per ticker, parallel, 10-min cache
+    └── recommendation.py
+            ├── SAA: max-Sharpe via scipy.optimize (weight caps + vol target)
+            ├── TAA: tilt strategic weights by signal score
+            └── Blend: final_weight = SAA × TAA overlay × ML forecast nudge
+    │
+    ▼
+SQLite  (investment_app.db)
+    ├── holdings        ← ticker, shares, account type
+    ├── tax_lots        ← per-lot cost basis, acquired date, long/short flag
+    ├── four01k_options
+    └── four01k_allocations
+```
+
+---
+
+**Request lifecycle — analytics**
+
+1. Dashboard POSTs to `/analytics/recommendation/start`
+2. API creates a job record (`pending`) and spawns a background thread
+3. API returns `{job_id}` in < 1 s — no timeout risk
+4. Background thread runs the full pipeline and writes result to job store
+5. Dashboard polls `/analytics/jobs/{job_id}` every 3 s with a spinner
+6. When status = `done`, result is rendered; job purged after 5 min TTL
+
+---
+
+**Rebalance planner logic**
+
+1. Fetch latest prices for all held tickers
+2. Compute current portfolio value and per-ticker weight
+3. Calculate required drift vs target weights
+4. Sort lots for each over-weight ticker:
+   - Loss lots first (tax-free harvest)
+   - Long-term gain lots second (lower tax rate)
+   - Short-term gain lots last
+5. Emit BUY / SELL trades that close the drift, skipping trades below
+   the minimum trade value threshold
+6. Estimate tax drag per sell trade and sum total impact
+
+---
+
+**Performance notes**
+
+- Market data: 12 tickers fetched in parallel in ~3–8 s (network dependent)
+- RandomForest fit: ~2–5 s per ticker, all tickers run concurrently
+- Optimizer: < 1 s for universes up to ~30 tickers
+- Total wall-clock for a 12-ticker recommendation: typically 10–20 s
+"""
+        )
+
 auth_headers = build_auth_headers(api_key)
 
 # Initialise session state keys once
