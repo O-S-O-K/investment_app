@@ -16,20 +16,14 @@ _PER_TICKER_TIMEOUT = 25          # seconds before giving up on a single ticker
 
 
 def _fetch_one(ticker: str, start: str, end: str) -> tuple[str, pd.Series | None]:
-    """Download a single ticker and return (ticker, close_series). Returns None on failure."""
+    """Download a single ticker using Ticker.history() (thread-safe, own session)."""
     try:
-        data = yf.download(
-            tickers=ticker,
-            start=start,
-            end=end,
-            auto_adjust=True,
-            progress=False,
-        )
-        if data.empty:
+        t = yf.Ticker(ticker)
+        data = t.history(start=start, end=end, auto_adjust=True)
+        if data.empty or "Close" not in data.columns:
+            logger.warning("No data for %s", ticker)
             return ticker, None
-        # flat columns for single ticker
-        col = "Close" if "Close" in data.columns else data.columns[0]
-        return ticker, data[col].rename(ticker)
+        return ticker, data["Close"].rename(ticker)
     except Exception as exc:
         logger.warning("yfinance failed for %s: %s", ticker, exc)
         return ticker, None
