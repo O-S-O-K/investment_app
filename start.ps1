@@ -38,6 +38,16 @@ if ($lanIP) {
 }
 Write-Host ""
 
+# Kill any processes already holding ports 8000 or 8501
+foreach ($port in @(8000, 8501)) {
+    $conn = Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue
+    if ($conn) {
+        Write-Host "Stopping old process on port $port (PID $($conn.OwningProcess))" -ForegroundColor Yellow
+        Stop-Process -Id $conn.OwningProcess -Force -ErrorAction SilentlyContinue
+    }
+}
+Start-Sleep -Seconds 1
+
 # Start API in a new window
 Start-Process powershell -ArgumentList @(
     "-NoExit",
