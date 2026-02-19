@@ -26,7 +26,14 @@ def build_recommendation(tickers: list[str]) -> dict:
     portfolio_return = float((final_weights * blended_mu).sum())
     cov_matrix = covariance.loc[final_weights.index, final_weights.index].values
     weight_vector = final_weights.values
-    portfolio_vol = float(np.sqrt(weight_vector @ cov_matrix @ weight_vector))
+    _var = float(weight_vector @ cov_matrix @ weight_vector)
+    portfolio_vol = float(np.sqrt(max(_var, 0.0)))  # guard against tiny negative float from fp rounding
+
+    # Replace any NaN/inf that slipped through with 0.0 so JSON serialisation never produces null
+    if not np.isfinite(portfolio_return):
+        portfolio_return = 0.0
+    if not np.isfinite(portfolio_vol):
+        portfolio_vol = 0.0
 
     allocations = []
     for ticker in final_weights.index:

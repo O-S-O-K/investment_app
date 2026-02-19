@@ -150,8 +150,10 @@ with tab1:
         if st.session_state.rec_result:
             payload = st.session_state.rec_result
             alloc_df = pd.DataFrame(payload["allocations"])
-            st.metric("Expected Return", f"{payload['expected_return']:.2%}")
-            st.metric("Expected Volatility", f"{payload['expected_volatility']:.2%}")
+            ret = payload.get("expected_return")
+            vol = payload.get("expected_volatility")
+            st.metric("Expected Return", f"{ret:.2%}" if ret is not None else "N/A")
+            st.metric("Expected Volatility", f"{vol:.2%}" if vol is not None else "N/A")
             fig = px.pie(alloc_df, names="ticker", values="final_weight", title="Final Allocation")
             st.plotly_chart(fig, use_container_width=True)
             st.dataframe(alloc_df, use_container_width=True)
