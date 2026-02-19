@@ -1,4 +1,4 @@
-# start.ps1 — one-click launcher for Investment App
+﻿# start.ps1 - one-click launcher for Investment App
 # Run from the investment_app folder: .\start.ps1
 
 $root = $PSScriptRoot
@@ -9,10 +9,10 @@ $envExample = Join-Path $root ".env.example"
 # Create .env if missing
 if (-not (Test-Path $envFile)) {
     Copy-Item $envExample $envFile
-    Write-Host ".env created from .env.example — edit API_KEY before exposing on a network" -ForegroundColor Yellow
+    Write-Host ".env created from .env.example - edit API_KEY before exposing on a network" -ForegroundColor Yellow
 }
 
-# Install dependencies if venv is missing or app not installed
+# Create venv and install if missing
 if (-not (Test-Path $venvPython)) {
     Write-Host "Creating virtual environment..." -ForegroundColor Cyan
     python -m venv "$root\.venv"
@@ -29,9 +29,9 @@ $lanIP = (
 
 Write-Host ""
 Write-Host "=====================================" -ForegroundColor Green
-Write-Host "  Investment App — Local Launcher" -ForegroundColor Green
+Write-Host "  Investment App - Local Launcher" -ForegroundColor Green
 Write-Host "=====================================" -ForegroundColor Green
-Write-Host "  API    -> http://127.0.0.1:8000"
+Write-Host "  API       -> http://127.0.0.1:8000"
 Write-Host "  Dashboard -> http://127.0.0.1:8501"
 if ($lanIP) {
     Write-Host "  Phone (LAN) -> http://${lanIP}:8501" -ForegroundColor Cyan
