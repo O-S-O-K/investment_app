@@ -199,17 +199,72 @@ investment_app/
 
 ---
 
-## Deploying for phone access (Render)
+## Accessing the app on a phone or tablet
 
-This repo includes [`render.yaml`](render.yaml) for Blueprint deploy.
+### Option A — Local Wi-Fi (same network, no internet required)
+
+Both servers already bind to `0.0.0.0` when launched via `start.ps1`, so any device on the same Wi-Fi can reach them.
+
+**1. Find your laptop's LAN IP**
+
+```powershell
+Get-NetIPAddress -AddressFamily IPv4 |
+  Where-Object { $_.InterfaceAlias -notlike "*Loopback*" -and $_.IPAddress -notlike "169.*" } |
+  Select-Object IPAddress, InterfaceAlias
+```
+
+Look for the `Wi-Fi` row — e.g. `192.168.1.199`.  
+`start.ps1` also prints this automatically as **"Phone (LAN)"** each time you launch.
+
+**2. Start the app as normal**
+
+```powershell
+.\start.ps1
+```
+
+**3. Open the dashboard on your phone**
+
+```
+http://<your-LAN-IP>:8501
+```
+
+e.g. `http://192.168.1.199:8501`
+
+**4. Update the API URL in the sidebar**
+
+Once the dashboard loads, expand the sidebar and change **API Base URL** from  
+`http://127.0.0.1:8000` → `http://<your-LAN-IP>:8000`  
+
+> `127.0.0.1` refers to the phone itself — it must point to the laptop's IP address.
+
+**5. If the phone can't connect — open the firewall**
+
+Run this once in an **admin** PowerShell on the laptop:
+
+```powershell
+New-NetFirewallRule -DisplayName "InvestApp API"       -Direction Inbound -Protocol TCP -LocalPort 8000 -Action Allow
+New-NetFirewallRule -DisplayName "InvestApp Dashboard" -Direction Inbound -Protocol TCP -LocalPort 8501 -Action Allow
+```
+
+> **Security note:** this exposes both ports to your local network only. Do not do this on a public or shared Wi-Fi.
+
+---
+
+### Option B — Internet access from anywhere (Render cloud deploy)
+
+This repo includes a [`render.yaml`](render.yaml) for one-click Blueprint deployment.
+
+**Steps:**
 
 1. Push your latest changes to GitHub
 2. In Render → **New +** → **Blueprint** → select this repo
-3. Set environment variables:
+3. Set environment variables in the Render dashboard:
    - `investment-app-api` → `API_KEY` (choose a strong secret)
-   - `investment-app-dashboard` → `API_KEY` (same value), `API_BASE` (your API service public URL)
+   - `investment-app-dashboard` → `API_KEY` (same value), `API_BASE` (the public URL of your API service)
 4. Deploy both services
-5. Open the dashboard URL on your phone
+5. Open the dashboard public URL on any device, anywhere
+
+> The free Render tier spins down inactive services after ~15 min — the first request after idle will take 30–60 s to cold-start.
 
 ---
 
