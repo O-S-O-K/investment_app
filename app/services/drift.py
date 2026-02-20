@@ -7,7 +7,7 @@ weight dict and flags positions that have drifted beyond a configurable threshol
 from __future__ import annotations
 
 from app.db import SessionLocal
-from app.models import Holding
+from app.models import TaxLot
 from app.services.market_data import fetch_adjusted_close
 
 
@@ -18,16 +18,18 @@ def compute_drift(
     """
     Compare current portfolio weights to *target_weights*.
 
+    Uses TaxLot table (same source as rebalance planner) so portfolio value
+    is consistent across features. Only taxable lots are included.
     Uses a fresh DB session (safe to call from a background thread).
     Returns a drift table and breach summary.
     """
     db = SessionLocal()
     try:
-        holdings = db.query(Holding).filter(Holding.account_type == "taxable").all()
+        lots = db.query(TaxLot).filter(TaxLot.account_type == "taxable").all()
     finally:
         db.close()
 
-    if not holdings:
+    if not lots:
         return {
             "error": "No taxable holdings found in database.",
             "rows": [],
@@ -36,12 +38,12 @@ def compute_drift(
             "drift_threshold": drift_threshold,
         }
 
+    # Aggregate shares per ticker across all lots
     ticker_shares: dict[str, float] = {}
-    for h in holdings:
-        ticker_shares[h.ticker] = ticker_shares.get(h.ticker, 0.0) + h.shares
+    for lot in lots:
+        ticker_shares[lot.ticker] = ticker_shares.get(lot.ticker, 0.0) + lot.shares
 
     tickers = list(ticker_shares.keys())
-    # 1-month lookback is enough to get a current price
     prices_df = fetch_adjusted_close(tickers=tickers, years=0, months=2)
     latest_prices = prices_df.iloc[-1].to_dict()
 

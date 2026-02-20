@@ -32,23 +32,22 @@ def build_tax_lot_rebalance_plan(db: Session, payload: RebalanceRequest) -> dict
 
     target_weights = {ticker: weight / total_target for ticker, weight in target_weights.items()}
     tickers = sorted(target_weights.keys())
-    lots = db.query(TaxLot).filter(TaxLot.ticker.in_(tickers)).all()
 
-    if not lots:
-        return {
-            "generated_at": datetime.utcnow(),
-            "portfolio_value": 0.0,
-            "estimated_total_tax_impact": 0.0,
-            "trades": [],
-            "notes": ["No tax lots found for requested target tickers."],
-        }
+    # --- Full portfolio value from ALL tax lots (not just target tickers) ---
+    all_lots = db.query(TaxLot).all()
+    all_tickers_in_db = list({lot.ticker for lot in all_lots})
+    all_prices = _latest_prices(all_tickers_in_db) if all_tickers_in_db else {}
+    # Merge in prices for any target tickers not yet held
+    missing_target = [t for t in tickers if t not in all_prices]
+    if missing_target:
+        all_prices.update(_latest_prices(missing_target))
 
-    prices = _latest_prices(tickers)
-    market_values: dict[str, float] = {ticker: 0.0 for ticker in tickers}
-    for lot in lots:
-        market_values[lot.ticker] += lot.shares * prices[lot.ticker]
+    full_market_values: dict[str, float] = {}
+    for lot in all_lots:
+        p = all_prices.get(lot.ticker, 0.0)
+        full_market_values[lot.ticker] = full_market_values.get(lot.ticker, 0.0) + lot.shares * p
+    portfolio_value = sum(full_market_values.values())
 
-    portfolio_value = sum(market_values.values())
     if portfolio_value <= 0:
         return {
             "generated_at": datetime.utcnow(),
@@ -57,6 +56,21 @@ def build_tax_lot_rebalance_plan(db: Session, payload: RebalanceRequest) -> dict
             "trades": [],
             "notes": ["Portfolio market value is zero or unavailable."],
         }
+
+    # Lots and current values for target tickers only (used for trade deltas)
+    prices = {t: all_prices.get(t, 0.0) for t in tickers}
+    lots = [lot for lot in all_lots if lot.ticker in tickers]
+    market_values: dict[str, float] = {ticker: 0.0 for ticker in tickers}
+    for lot in lots:
+        market_values[lot.ticker] += lot.shares * prices[lot.ticker]
+
+    non_target_value = portfolio_value - sum(market_values.values())
+    notes_extra: list[str] = []
+    if non_target_value > 1.0:
+        notes_extra.append(
+            f"${non_target_value:,.0f} in non-target holdings is included in the total "
+            "portfolio value but not traded by this plan."
+        )
 
     target_values = {ticker: target_weights[ticker] * portfolio_value for ticker in tickers}
     deltas = {ticker: target_values[ticker] - market_values[ticker] for ticker in tickers}
@@ -156,5 +170,5 @@ def build_tax_lot_rebalance_plan(db: Session, payload: RebalanceRequest) -> dict
         "notes": [
             "Plan is tax-aware but does not include wash-sale enforcement.",
             "Verify account restrictions and bid/ask liquidity before execution.",
-        ],
+        ] + notes_extra,
     }

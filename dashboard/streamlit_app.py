@@ -308,6 +308,28 @@ with tab1:
             "The app reads each position and tax lot so it can later calculate "
             "tax-efficient trade plans."
         )
+        st.warning(
+            "⚠️ **Each import appends to the database — it does not replace existing data.** "
+            "If you re-import the same file, positions will be doubled. "
+            "Use **Clear All Holdings** below before reimporting to avoid this.",
+            icon=None,
+        )
+        with st.expander("🗑️ Clear All Holdings", expanded=False):
+            st.caption(
+                "Deletes every holding and tax lot from the database so you can do a clean "
+                "reimport. This cannot be undone."
+            )
+            if st.button("⚠️ Clear All Holdings & Lots", type="primary", use_container_width=True):
+                r, err = safe_delete(
+                    f"{api_base}/portfolio/holdings/clear",
+                    headers=auth_headers, timeout=10,
+                )
+                if err:
+                    st.error(f"Connection error: {err}")
+                elif r.ok:
+                    st.success("All holdings and tax lots cleared.")
+                else:
+                    st.error(f"API error: {r.text}")
         uploaded = st.file_uploader("Upload holdings CSV", type=["csv"])
         import_account_type = st.selectbox(
             "Account Type", options=["taxable", "401k", "ira"], index=0,
@@ -406,16 +428,24 @@ larger weight than the pure strategic model would suggest.
         if st.session_state.signals_result:
             signals_df = pd.DataFrame(st.session_state.signals_result)
 
-            def _colour_signal(val):
-                if str(val).upper() == "BUY":
-                    return "background-color: #d4edda; color: #155724"
-                if str(val).upper() == "SELL":
-                    return "background-color: #f8d7da; color: #721c24"
-                return ""
+            def _colour_signal_row(row):
+                """Colour both 'signal' and 'tactical_score' cells based on signal value."""
+                sig = str(row.get("signal", "")).upper()
+                if sig == "BUY":
+                    colour = "background-color: #d4edda; color: #155724"
+                elif sig == "SELL":
+                    colour = "background-color: #f8d7da; color: #721c24"
+                else:
+                    colour = "background-color: #fff3cd; color: #856404"
+                result = [""] * len(row)
+                for i, col in enumerate(row.index):
+                    if col in ("signal", "tactical_score"):
+                        result[i] = colour
+                return result
 
             if "signal" in signals_df.columns:
                 st.dataframe(
-                    signals_df.style.applymap(_colour_signal, subset=["signal"]),
+                    signals_df.style.apply(_colour_signal_row, axis=1),
                     use_container_width=True,
                 )
             else:
@@ -603,11 +633,23 @@ situation. The minimum trade filter suppresses tiny orders that aren't worth the
                 elif r.ok:
                     p = r.json()
                     rv1, rv2 = st.columns(2)
-                    rv1.metric("Portfolio Value", f"${p['portfolio_value']:,.2f}")
+                    rv1.metric(
+                        "Total Portfolio Value",
+                        f"${p['portfolio_value']:,.2f}",
+                        help="Sum of ALL your holdings at current market prices, "
+                             "including positions not listed in the target weights.",
+                    )
                     rv2.metric("Est. Tax Impact", f"${p['estimated_total_tax_impact']:,.2f}")
                     trades = pd.DataFrame(p["trades"])
                     if not trades.empty:
                         st.dataframe(trades, use_container_width=True)
+                        if "action" in trades.columns and (trades["action"] == "SELL").any():
+                            st.caption(
+                                "ℹ️ Multiple SELL rows for the same ticker are separate "
+                                "**tax lots** — each row shows which specific lot to sell "
+                                "and why, to minimise tax drag. Execute each as a separate "
+                                "lot-level order if your broker supports it."
+                            )
                     else:
                         st.info("No trades needed — portfolio is already within tolerance.")
                     if p.get("notes"):

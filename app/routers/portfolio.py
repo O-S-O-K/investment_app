@@ -257,3 +257,11 @@ def rebalance_plan(payload: RebalanceRequest, db: Session = Depends(get_db)):
         return build_tax_lot_rebalance_plan(db=db, payload=payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/holdings/clear")
+def clear_all_holdings(db: Session = Depends(get_db)):
+    """Delete all Holding rows (and their TaxLot children via CASCADE)."""
+    deleted = db.query(Holding).delete()
+    db.commit()
+    return {"deleted_holdings": deleted, "message": "All holdings and tax lots cleared."}
