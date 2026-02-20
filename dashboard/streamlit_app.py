@@ -310,11 +310,10 @@ with tab1:
             "The app reads each position and tax lot so it can later calculate "
             "tax-efficient trade plans."
         )
-        st.warning(
-            "⚠️ **Each import appends to the database — it does not replace existing data.** "
-            "If you re-import the same file, positions will be doubled. "
-            "Use **Clear All Holdings** below before reimporting to avoid this.",
-            icon=None,
+        st.info(
+            "ℹ️ **Import replaces existing data per ticker** — re-importing the same file is safe "
+            "and will not duplicate positions. To remove a ticker entirely before importing, use "
+            "**Clear All Holdings** below.",
         )
         with st.expander("🗑️ Clear All Holdings", expanded=False):
             st.caption(

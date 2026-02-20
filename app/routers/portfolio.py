@@ -319,6 +319,24 @@ async def import_holdings_csv(
     created_holdings = 0
     created_lots = 0
 
+    # UPSERT: for every (ticker, account_type) in this import, delete any existing
+    # Holdings and TaxLots first so re-importing the same file is idempotent.
+    incoming_combos = {(r["ticker"], r["account_type"]) for r in parsed}
+    for ticker, acct in incoming_combos:
+        old_holdings = (
+            db.query(Holding)
+            .filter(Holding.ticker == ticker, Holding.account_type == acct)
+            .all()
+        )
+        for h in old_holdings:
+            db.query(TaxLot).filter(TaxLot.holding_id == h.id).delete()
+            db.delete(h)
+        # Also remove any orphaned TaxLots for this (ticker, account_type)
+        db.query(TaxLot).filter(
+            TaxLot.ticker == ticker, TaxLot.account_type == acct
+        ).delete()
+    db.flush()
+
     for r in parsed:
         acquired_at = datetime.utcnow()
         for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
