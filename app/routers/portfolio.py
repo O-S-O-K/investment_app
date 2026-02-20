@@ -17,6 +17,7 @@ from app.schemas import (
     RebalancePlanResponse,
     RebalanceRequest,
 )
+from app.services.market_data import fetch_adjusted_close
 from app.services.rebalance import build_tax_lot_rebalance_plan
 
 router = APIRouter()
@@ -265,3 +266,65 @@ def clear_all_holdings(db: Session = Depends(get_db)):
     deleted = db.query(Holding).delete()
     db.commit()
     return {"deleted_holdings": deleted, "message": "All holdings and tax lots cleared."}
+
+
+@router.get("/holdings/summary")
+def holdings_summary(db: Session = Depends(get_db)):
+    """
+    Return a per-(ticker, account_type) summary of all tax lots with current
+    market prices so the user can verify totals before running drift/rebalance.
+    """
+    lots = db.query(TaxLot).all()
+    if not lots:
+        return {"rows": [], "total_market_value": 0.0, "total_cost_basis": 0.0,
+                "total_unrealized_gain": 0.0, "note": "No holdings in database."}
+
+    # Aggregate per (ticker, account_type)
+    agg: dict[tuple, dict] = {}
+    for lot in lots:
+        key = (lot.ticker, lot.account_type)
+        if key not in agg:
+            agg[key] = {"ticker": lot.ticker, "account_type": lot.account_type,
+                        "shares": 0.0, "cost_basis_total": 0.0, "lot_count": 0}
+        agg[key]["shares"] += lot.shares
+        agg[key]["cost_basis_total"] += lot.shares * lot.cost_basis_per_share
+        agg[key]["lot_count"] += 1
+
+    tickers = list({k[0] for k in agg})
+    try:
+        prices_df = fetch_adjusted_close(tickers=tickers, years=0, months=2)
+        latest_prices = prices_df.iloc[-1].to_dict()
+    except Exception:
+        latest_prices = {}
+
+    rows = []
+    total_market_value = 0.0
+    total_cost_basis = 0.0
+    for (ticker, acct), data in sorted(agg.items()):
+        price = latest_prices.get(ticker, 0.0)
+        market_value = data["shares"] * price
+        cost_basis = data["cost_basis_total"]
+        unrealized = market_value - cost_basis
+        unrealized_pct = (unrealized / cost_basis * 100) if cost_basis > 0 else 0.0
+        total_market_value += market_value
+        total_cost_basis += cost_basis
+        rows.append({
+            "ticker": ticker,
+            "account_type": acct,
+            "lot_count": data["lot_count"],
+            "shares": round(data["shares"], 6),
+            "current_price": round(price, 4),
+            "market_value": round(market_value, 2),
+            "cost_basis_total": round(cost_basis, 2),
+            "unrealized_gain": round(unrealized, 2),
+            "unrealized_gain_pct": round(unrealized_pct, 2),
+        })
+
+    total_unrealized = total_market_value - total_cost_basis
+    return {
+        "rows": rows,
+        "total_market_value": round(total_market_value, 2),
+        "total_cost_basis": round(total_cost_basis, 2),
+        "total_unrealized_gain": round(total_unrealized, 2),
+        "note": "Prices are delayed ~15 min. This total should match Drift and Rebalance.",
+    }

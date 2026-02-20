@@ -276,6 +276,7 @@ _state_keys = [
     "attribution_job", "attribution_result",
     "scenarios_job", "scenarios_result",
     "factors_job", "factors_result",
+    "holdings_summary",
 ]
 for _k in _state_keys:
     if _k not in st.session_state:
@@ -328,6 +329,7 @@ with tab1:
                     st.error(f"Connection error: {err}")
                 elif r.ok:
                     st.success("All holdings and tax lots cleared.")
+                    st.session_state.holdings_summary = None
                 else:
                     st.error(f"API error: {r.text}")
         uploaded = st.file_uploader("Upload holdings CSV", type=["csv"])
@@ -370,6 +372,14 @@ with tab1:
                     )
                     if payload.get("warnings"):
                         st.caption("Warnings: " + " | ".join(payload["warnings"]))
+                    # Automatically refresh the holdings summary after import
+                    st.session_state.holdings_summary = None
+                    r2, err2 = safe_get(
+                        f"{api_base}/portfolio/holdings/summary",
+                        headers=auth_headers, timeout=30,
+                    )
+                    if err2 is None and r2.ok:
+                        st.session_state.holdings_summary = r2.json()
                 else:
                     st.error(f"API error: {r.text}")
 
@@ -378,6 +388,72 @@ with tab1:
             "Supported formats: Fidelity, Schwab, and Vanguard CSV exports. "
             "See samples/holdings_example.csv for the reference format."
         )
+
+        # ---- Holdings verification table ----
+        st.subheader("Holdings Verification")
+        st.caption(
+            "Verify these numbers match your broker statement before running "
+            "Drift or Rebalance. Portfolio Value here is the same figure used by both."
+        )
+        hcol1, hcol2 = st.columns([1, 1])
+        with hcol1:
+            if st.button("🔄 Refresh Holdings Summary", use_container_width=True):
+                r, err = safe_get(
+                    f"{api_base}/portfolio/holdings/summary",
+                    headers=auth_headers, timeout=30,
+                )
+                if err:
+                    st.error(f"Connection error: {err}")
+                elif r.ok:
+                    st.session_state.holdings_summary = r.json()
+                else:
+                    st.error(f"API error: {r.text}")
+
+        if st.session_state.get("holdings_summary"):
+            hs = st.session_state.holdings_summary
+            if hs.get("rows"):
+                import pandas as pd  # noqa: PLC0415
+
+                hsm1, hsm2, hsm3 = st.columns(3)
+                hsm1.metric(
+                    "Total Market Value",
+                    f"${hs['total_market_value']:,.2f}",
+                    help="This is the number used by Drift Monitor and Rebalance Planner.",
+                )
+                hsm2.metric(
+                    "Total Cost Basis",
+                    f"${hs['total_cost_basis']:,.2f}",
+                )
+                gain = hs["total_unrealized_gain"]
+                hsm3.metric(
+                    "Unrealised Gain / Loss",
+                    f"${gain:,.2f}",
+                    delta=f"{gain / hs['total_cost_basis'] * 100:.1f}%" if hs["total_cost_basis"] else None,
+                    delta_color="normal",
+                )
+
+                hs_df = pd.DataFrame(hs["rows"])
+                # Colour: green = gain, red = loss
+                def _colour_gain(val):
+                    try:
+                        return "color: #155724" if float(val) >= 0 else "color: #721c24"
+                    except (TypeError, ValueError):
+                        return ""
+
+                styled = (
+                    hs_df.style
+                    .applymap(_colour_gain, subset=["unrealized_gain", "unrealized_gain_pct"])
+                    .format({
+                        "shares": "{:,.4f}",
+                        "current_price": "${:,.2f}",
+                        "market_value": "${:,.2f}",
+                        "cost_basis_total": "${:,.2f}",
+                        "unrealized_gain": "${:,.2f}",
+                        "unrealized_gain_pct": "{:.2f}%",
+                    })
+                )
+                st.dataframe(styled, use_container_width=True)
+                st.caption(hs.get("note", ""))
 
     with sig_col:
         st.subheader("Tactical Signals")
