@@ -85,27 +85,33 @@ def list_401k_allocation(db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 _COL_TICKER = ["ticker", "symbol", "security"]
 _COL_SHARES = ["shares", "quantity", "qty", "number of shares", "share quantity"]
-# Total cost basis (preferred)
-_COL_CB_TOTAL = ["cost_basis", "cost basis total", "cost basis", "total cost basis",
-                 "total cost", "basis"]
+# Total cost basis (preferred) — ordered most-specific first to avoid wrong matches
+_COL_CB_TOTAL = ["cost_basis", "cost basis total", "total cost basis", "total cost",
+                 "cost basis", "adjusted cost basis total"]
 # Per-share cost basis (fallback – multiplied by shares to get total)
-_COL_CB_PER_SHARE = ["average cost basis", "avg cost basis", "cost basis/share",
-                     "unit cost"]
+_COL_CB_PER_SHARE = ["average cost basis", "avg cost basis", "average cost",
+                     "cost basis/share", "unit cost", "cost/share"]
 _COL_ACQUIRED = ["acquired_at", "acquired date", "date acquired",
                  "acquisition date", "trade date", "open date"]
 _COL_ACCOUNT  = ["account_type", "account type", "acct type"]
 
+# Tickers that are never real positions (various broker footer/summary rows)
+_SKIP_TICKERS = {
+    "TOTAL", "TOTALS", "TOTAL ACCOUNT VALUE", "ACCOUNT TOTAL",
+    "CASH", "PENDING ACTIVITY", "OTHER", "--", "N/A",
+}
+
 
 def _clean_num(val: str) -> float:
-    """Strip $, commas, spaces and cast to float. Raises ValueError if empty/dash."""
-    cleaned = val.strip().replace("$", "").replace(",", "").replace(" ", "")
-    if cleaned in ("", "--", "N/A", "n/a"):
+    """Strip $, commas, +, spaces and cast to float. Raises ValueError if empty/dash."""
+    cleaned = val.strip().replace("$", "").replace(",", "").replace("+", "").replace(" ", "")
+    if cleaned in ("", "--", "-", "N/A", "n/a", "n/a*"):
         raise ValueError(f"no numeric value: {val!r}")
     return float(cleaned)
 
 
 def _map_col(fieldnames: list[str], aliases: list[str]) -> str | None:
-    """Return the first fieldname that matches any alias (case-insensitive)."""
+    """Return the first fieldname that matches any alias (case-insensitive, exact match)."""
     lower_fields = {f.strip().lower(): f for f in fieldnames}
     for alias in aliases:
         if alias.lower() in lower_fields:
@@ -122,6 +128,166 @@ def _find_header_line(lines: list[str]) -> int:
     return 0
 
 
+def _is_skip_ticker(ticker: str) -> bool:
+    """Return True if this ticker value represents a non-position row."""
+    t = ticker.strip().upper()
+    if not t or t.startswith("--"):
+        return True
+    if t in _SKIP_TICKERS:
+        return True
+    if t.endswith("**"):          # cash sweep like SPAXX**
+        return True
+    if "PENDING" in t:
+        return True
+    if " " in t and len(t) > 5:  # real tickers have no spaces; descriptions do
+        return True
+    return False
+
+
+def _parse_csv_rows(
+    lines: list[str],
+    account_type: str,
+    broker_source: str,
+) -> tuple[dict, list[dict], list[str]]:
+    """
+    Parse CSV lines into holding rows without touching the DB.
+
+    Returns:
+        column_map  — which column name was detected for each field
+        parsed      — list of dicts ready to write
+        warnings    — list of skipped-row messages
+    """
+    header_idx = _find_header_line(lines)
+    reader = csv.DictReader(lines[header_idx:])
+
+    if not reader.fieldnames:
+        raise ValueError("Could not parse CSV — no header row found.")
+
+    fields: list[str] = list(reader.fieldnames)
+
+    col_ticker   = _map_col(fields, _COL_TICKER)
+    col_shares   = _map_col(fields, _COL_SHARES)
+    col_cb_total = _map_col(fields, _COL_CB_TOTAL)
+    col_cb_ps    = _map_col(fields, _COL_CB_PER_SHARE)
+    col_acquired = _map_col(fields, _COL_ACQUIRED)
+    col_account  = _map_col(fields, _COL_ACCOUNT)
+
+    missing = []
+    if not col_ticker: missing.append("ticker/symbol")
+    if not col_shares: missing.append("shares/quantity")
+    if not col_cb_total and not col_cb_ps: missing.append("cost basis")
+    if missing:
+        raise ValueError(
+            f"Cannot find required columns: {', '.join(missing)}. "
+            f"Detected columns: {', '.join(fields[:20])}."
+        )
+
+    column_map = {
+        "ticker_col":       col_ticker,
+        "shares_col":       col_shares,
+        "cost_basis_col":   col_cb_total or f"{col_cb_ps} (per-share × shares)",
+        "acquired_col":     col_acquired or "(none — will use today)",
+        "account_type_col": col_account  or f"(none — will use '{account_type}')",
+        "all_columns":      fields,
+    }
+
+    parsed: list[dict] = []
+    warnings: list[str] = []
+
+    for idx, row in enumerate(reader, start=2):
+        try:
+            ticker = (row.get(col_ticker) or "").strip().upper()
+            if _is_skip_ticker(ticker):
+                warnings.append(f"Row {idx} skipped: non-position ticker {ticker!r}")
+                continue
+
+            shares = _clean_num(row.get(col_shares) or "")
+
+            # Cost basis: prefer total column; fall back to per-share if total is "--"/missing
+            cost_basis: float | None = None
+            cb_method = ""
+            if col_cb_total:
+                raw_cb = (row.get(col_cb_total) or "").strip()
+                if raw_cb and raw_cb not in ("--", "-", "N/A", "n/a", "n/a*", ""):
+                    try:
+                        cost_basis = _clean_num(raw_cb)
+                        cb_method = f"from '{col_cb_total}'"
+                    except ValueError:
+                        pass  # fall through to per-share
+            if cost_basis is None and col_cb_ps:
+                raw_ps = (row.get(col_cb_ps) or "").strip()
+                cb_ps_val = _clean_num(raw_ps)
+                cost_basis = cb_ps_val * shares
+                cb_method = f"per-share '{col_cb_ps}' × shares"
+            if cost_basis is None:
+                raise ValueError("cost basis unavailable (both columns are empty/--)")
+
+            acquired_raw = (row.get(col_acquired) if col_acquired else None) or ""
+            acquired_at_str = "today (no date column)"
+            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+                try:
+                    datetime.strptime(acquired_raw.strip(), fmt)
+                    acquired_at_str = acquired_raw.strip()
+                    break
+                except ValueError:
+                    pass
+
+            row_account_type = (
+                (row.get(col_account).strip() if col_account and row.get(col_account) else "")
+                or account_type
+            )
+
+            if shares <= 0 or cost_basis <= 0:
+                raise ValueError(f"shares={shares}, cost_basis={cost_basis} must be positive")
+
+            parsed.append({
+                "ticker": ticker,
+                "shares": round(shares, 6),
+                "cost_basis_total": round(cost_basis, 2),
+                "cost_basis_per_share": round(cost_basis / shares, 4),
+                "acquired_at": acquired_at_str,
+                "account_type": row_account_type,
+                "broker_source": broker_source,
+                "cb_method": cb_method,
+            })
+
+        except Exception as exc:
+            warnings.append(f"Row {idx} skipped: {exc}")
+
+    return column_map, parsed, warnings
+
+
+@router.post("/holdings/preview-csv")
+async def preview_csv(
+    file: UploadFile = File(...),
+    account_type: str = "taxable",
+    broker_source: str = "csv-import",
+):
+    """
+    Dry-run the CSV import and return exactly what would be written.
+    Nothing is saved to the database.
+    """
+    if not file.filename.lower().endswith(".csv"):
+        raise HTTPException(status_code=400, detail="File must be a .csv")
+    raw = await file.read()
+    decoded = raw.decode("utf-8-sig")
+    lines = decoded.splitlines()
+    try:
+        column_map, parsed, warnings = _parse_csv_rows(lines, account_type, broker_source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    total_cost_basis = sum(r["cost_basis_total"] for r in parsed)
+    return {
+        "column_map": column_map,
+        "rows": parsed,
+        "row_count": len(parsed),
+        "skipped_count": len(warnings),
+        "total_cost_basis": round(total_cost_basis, 2),
+        "warnings": warnings,
+    }
+
+
 @router.post("/holdings/import-csv", response_model=ImportCSVResponse)
 async def import_holdings_csv(
     file: UploadFile = File(...),
@@ -136,120 +302,64 @@ async def import_holdings_csv(
     decoded = raw.decode("utf-8-sig")
     lines = decoded.splitlines()
 
-    # Skip any broker preamble rows (Fidelity adds account/date headers above data)
-    header_idx = _find_header_line(lines)
-    reader = csv.DictReader(lines[header_idx:])
+    try:
+        _column_map, parsed, parse_warnings = _parse_csv_rows(lines, account_type, broker_source)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if not reader.fieldnames:
-        raise HTTPException(status_code=400, detail="Could not parse CSV — no header row found.")
-
-    fields: list[str] = list(reader.fieldnames)
-
-    # Map column aliases → actual column names in this file
-    col_ticker   = _map_col(fields, _COL_TICKER)
-    col_shares   = _map_col(fields, _COL_SHARES)
-    col_cb_total = _map_col(fields, _COL_CB_TOTAL)
-    col_cb_ps    = _map_col(fields, _COL_CB_PER_SHARE)
-    col_acquired = _map_col(fields, _COL_ACQUIRED)
-    col_account  = _map_col(fields, _COL_ACCOUNT)
-
-    missing = []
-    if not col_ticker: missing.append("ticker/symbol")
-    if not col_shares: missing.append("shares/quantity")
-    if not col_cb_total and not col_cb_ps: missing.append("cost basis")
-    if missing:
+    if not parsed:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Cannot find required columns: {', '.join(missing)}. "
-                f"Detected columns: {', '.join(fields[:15])}. "
-                "Supported brokers: Fidelity, Schwab, Vanguard, or any CSV with "
-                "ticker/symbol, shares/quantity, and a cost basis column."
+                "No importable rows found. "
+                + (" Warnings: " + "; ".join(parse_warnings[:5]) if parse_warnings else "")
             ),
         )
 
-    imported_rows = 0
     created_holdings = 0
     created_lots = 0
-    skipped_rows = 0
-    warnings: list[str] = []
 
-    for idx, row in enumerate(reader, start=2):
-        imported_rows += 1
-        try:
-            ticker = (row.get(col_ticker) or "").strip().upper()
+    for r in parsed:
+        acquired_at = datetime.utcnow()
+        for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
+            try:
+                acquired_at = datetime.strptime(r["acquired_at"], fmt)
+                break
+            except ValueError:
+                pass
 
-            # Skip blank tickers, cash sweep funds (SPAXX**), summary rows
-            if not ticker or ticker.startswith("--") or ticker.upper() in ("TOTAL", "TOTALS"):
-                skipped_rows += 1
-                imported_rows -= 1
-                continue
-            if ticker.endswith("**") or "PENDING" in ticker.upper():
-                skipped_rows += 1
-                imported_rows -= 1
-                continue
+        holding = Holding(
+            ticker=r["ticker"],
+            account_type=r["account_type"],
+            shares=r["shares"],
+            cost_basis=r["cost_basis_total"],
+        )
+        db.add(holding)
+        db.flush()
+        created_holdings += 1
 
-            shares = _clean_num(row.get(col_shares) or "")
-
-            # Cost basis: prefer total column, fall back to per-share × shares
-            if col_cb_total:
-                cost_basis = _clean_num(row.get(col_cb_total) or "")
-            else:
-                cb_ps = _clean_num(row.get(col_cb_ps) or "")
-                cost_basis = cb_ps * shares
-
-            acquired_raw = (row.get(col_acquired) if col_acquired else None) or ""
-            acquired_raw = acquired_raw.strip()
-            acquired_at = datetime.utcnow()
-            for fmt in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y"):
-                try:
-                    acquired_at = datetime.strptime(acquired_raw, fmt)
-                    break
-                except ValueError:
-                    pass
-
-            row_account_type = (
-                (row.get(col_account).strip() if col_account and row.get(col_account) else "")
-                or account_type
-            )
-
-            if shares <= 0 or cost_basis <= 0:
-                raise ValueError("shares and cost_basis must be positive")
-
-            holding = Holding(
-                ticker=ticker,
-                account_type=row_account_type,
-                shares=shares,
-                cost_basis=cost_basis,
-            )
-            db.add(holding)
-            db.flush()
-            created_holdings += 1
-
-            lot = TaxLot(
-                holding_id=holding.id,
-                ticker=ticker,
-                account_type=row_account_type,
-                acquired_at=acquired_at,
-                shares=shares,
-                cost_basis_per_share=cost_basis / shares,
-                broker_source=broker_source,
-            )
-            db.add(lot)
-            created_lots += 1
-        except Exception as exc:
-            skipped_rows += 1
-            warnings.append(f"Row {idx} skipped: {exc}")
+        lot = TaxLot(
+            holding_id=holding.id,
+            ticker=r["ticker"],
+            account_type=r["account_type"],
+            acquired_at=acquired_at,
+            shares=r["shares"],
+            cost_basis_per_share=r["cost_basis_per_share"],
+            broker_source=r["broker_source"],
+        )
+        db.add(lot)
+        created_lots += 1
 
     db.commit()
 
     return ImportCSVResponse(
-        imported_rows=imported_rows,
+        imported_rows=len(parsed),
         created_holdings=created_holdings,
         created_lots=created_lots,
-        skipped_rows=skipped_rows,
-        warnings=warnings[:20],
+        skipped_rows=len(parse_warnings),
+        warnings=parse_warnings[:20],
     )
+
 
 
 @router.post("/rebalance/plan", response_model=RebalancePlanResponse)

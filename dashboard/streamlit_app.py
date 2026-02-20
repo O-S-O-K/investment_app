@@ -277,6 +277,7 @@ _state_keys = [
     "scenarios_job", "scenarios_result",
     "factors_job", "factors_result",
     "holdings_summary",
+    "csv_preview",
 ]
 for _k in _state_keys:
     if _k not in st.session_state:
@@ -330,6 +331,7 @@ with tab1:
                 elif r.ok:
                     st.success("All holdings and tax lots cleared.")
                     st.session_state.holdings_summary = None
+                    st.session_state.csv_preview = None
                 else:
                     st.error(f"API error: {r.text}")
         uploaded = st.file_uploader("Upload holdings CSV", type=["csv"])
@@ -345,43 +347,98 @@ with tab1:
                  "Useful if you have accounts at multiple brokers.",
         )
 
-        if st.button("Import CSV", use_container_width=True):
-            if uploaded is None:
-                st.warning("Please upload a CSV file first.")
-            else:
-                files = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
-                params = {
-                    "account_type": import_account_type,
-                    "broker_source": import_source,
-                }
-                r, err = safe_post(
-                    f"{api_base}/portfolio/holdings/import-csv",
-                    files=files,
-                    params=params,
-                    headers=auth_headers,
-                    timeout=60,
-                )
-                if err:
-                    st.error(f"Connection error: {err}")
-                elif r.ok:
-                    payload = r.json()
-                    st.success(
-                        f"Imported {payload['created_holdings']} holdings and "
-                        f"{payload['created_lots']} lots. "
-                        f"Skipped {payload['skipped_rows']} rows."
-                    )
-                    if payload.get("warnings"):
-                        st.caption("Warnings: " + " | ".join(payload["warnings"]))
-                    # Automatically refresh the holdings summary after import
-                    st.session_state.holdings_summary = None
-                    r2, err2 = safe_get(
-                        f"{api_base}/portfolio/holdings/summary",
+        if uploaded is not None:
+            pcol1, pcol2 = st.columns(2)
+            with pcol1:
+                if st.button("🔍 Preview CSV (no import)", use_container_width=True,
+                             help="Parse the file and show what would be imported — nothing is saved."):
+                    files_p = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
+                    params_p = {"account_type": import_account_type, "broker_source": import_source}
+                    r, err = safe_post(
+                        f"{api_base}/portfolio/holdings/preview-csv",
+                        files=files_p, params=params_p,
                         headers=auth_headers, timeout=30,
                     )
-                    if err2 is None and r2.ok:
-                        st.session_state.holdings_summary = r2.json()
-                else:
-                    st.error(f"API error: {r.text}")
+                    if err:
+                        st.error(f"Connection error: {err}")
+                    elif r.ok:
+                        st.session_state.csv_preview = r.json()
+                    else:
+                        st.error(f"API error: {r.text}")
+            with pcol2:
+                if st.button("⬆️ Import CSV", use_container_width=True, type="primary"):
+                    files_i = {"file": (uploaded.name, uploaded.getvalue(), "text/csv")}
+                    params_i = {"account_type": import_account_type, "broker_source": import_source}
+                    r, err = safe_post(
+                        f"{api_base}/portfolio/holdings/import-csv",
+                        files=files_i, params=params_i,
+                        headers=auth_headers, timeout=60,
+                    )
+                    if err:
+                        st.error(f"Connection error: {err}")
+                    elif r.ok:
+                        payload = r.json()
+                        st.success(
+                            f"Imported {payload['created_holdings']} holdings and "
+                            f"{payload['created_lots']} lots. "
+                            f"Skipped {payload['skipped_rows']} rows."
+                        )
+                        if payload.get("warnings"):
+                            st.caption("Warnings: " + " | ".join(payload["warnings"]))
+                        st.session_state.csv_preview = None
+                        # Auto-refresh holdings summary
+                        st.session_state.holdings_summary = None
+                        r2, err2 = safe_get(
+                            f"{api_base}/portfolio/holdings/summary",
+                            headers=auth_headers, timeout=30,
+                        )
+                        if err2 is None and r2.ok:
+                            st.session_state.holdings_summary = r2.json()
+                    else:
+                        st.error(f"API error: {r.text}")
+        else:
+            st.button("🔍 Preview CSV (no import)", use_container_width=True, disabled=True)
+            st.button("⬆️ Import CSV", use_container_width=True, disabled=True, type="primary")
+
+        # ---- CSV Preview results ----
+        if st.session_state.get("csv_preview"):
+            prev = st.session_state.csv_preview
+            st.divider()
+            st.markdown("**CSV Preview — verify before importing**")
+
+            # Column detection
+            cm = prev.get("column_map", {})
+            with st.expander("Detected column mapping", expanded=True):
+                st.markdown(
+                    f"- **Ticker** ← `{cm.get('ticker_col')}`\n"
+                    f"- **Shares** ← `{cm.get('shares_col')}`\n"
+                    f"- **Cost Basis** ← `{cm.get('cost_basis_col')}`\n"
+                    f"- **Acquired date** ← `{cm.get('acquired_col')}`\n"
+                    f"- **Account type** ← `{cm.get('account_type_col')}`\n\n"
+                    f"All columns in file: `{', '.join(cm.get('all_columns', []))}`"
+                )
+
+            # Parsed rows
+            cols_show = ["ticker", "shares", "cost_basis_total",
+                         "cost_basis_per_share", "cb_method", "acquired_at", "account_type"]
+            prows = prev.get("rows", [])
+            if prows:
+                prev_df = pd.DataFrame(prows)[[c for c in cols_show if c in pd.DataFrame(prows).columns]]
+                st.dataframe(prev_df, use_container_width=True)
+                mc1, mc2 = st.columns(2)
+                mc1.metric("Rows to import", prev["row_count"])
+                mc2.metric("Total Cost Basis", f"${prev['total_cost_basis']:,.2f}")
+            else:
+                st.warning("No importable rows found.")
+
+            # Skipped rows / warnings
+            warns = prev.get("warnings", [])
+            if warns:
+                with st.expander(f"⚠️ Skipped rows ({len(warns)})", expanded=len(prows) == 0):
+                    for w in warns:
+                        st.caption(w)
+
+            st.info("✅ If the numbers look correct, click **Import CSV** above to commit.")
 
         st.divider()
         st.caption(
